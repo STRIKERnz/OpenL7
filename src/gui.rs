@@ -31,6 +31,8 @@ const STAGE_COLORS: [Color32; 6] = [
 ];
 
 const LABEL_W: f32 = 120.0;
+/// Window content width from which the cards go side by side.
+const TWO_COLUMNS: f32 = 860.0;
 
 /// Accent presets offered next to the colour picker.
 const ACCENTS: [([u8; 3], &str); 7] = [
@@ -819,6 +821,129 @@ fn appearance(ui: &mut egui::Ui, prefs: &mut Prefs) {
     }
 }
 
+fn buttons_card(ui: &mut egui::Ui, cfg: &mut Config, ed: &mut ButtonEditor) {
+    card(ui, "Buttons", |ui| {
+        row(ui, settings::BUTTONS[0], |ui| {
+            ui.label(RichText::new("Left click (fixed)").color(WEAK));
+        });
+        for i in 1..5 {
+            let mut action = cfg.button(i);
+            let open = ed.open == Some(i);
+            row(ui, settings::BUTTONS[i], |ui| {
+                if action_header(ui, action, open).clicked() {
+                    ed.toggle(i, action);
+                }
+            });
+            if ed.open == Some(i) {
+                action_editor(ui, ed, &mut action);
+                ui.add_space(4.0);
+            }
+            if action != cfg.button(i) {
+                cfg.set_button(i, action);
+            }
+        }
+        row(ui, settings::BUTTONS[5], |ui| {
+            ui.label(RichText::new("DPI cycle (fixed)").color(WEAK));
+        });
+    });
+}
+
+fn dpi_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
+    card_with(
+        ui,
+        "DPI",
+        cfg,
+        |ui, cfg| {
+            let n = cfg.stages();
+            if ui.add_enabled(n < 6, egui::Button::new("+").min_size(Vec2::splat(26.0))).clicked() {
+                cfg.set_stages(n + 1);
+            }
+            ui.label(format!("{n} stages"));
+            if ui.add_enabled(n > 1, egui::Button::new("−").min_size(Vec2::splat(26.0))).clicked() {
+                cfg.set_stages(n - 1);
+                if cfg.active_stage(usb) as usize >= n - 1 {
+                    cfg.set_active_stage(n as u8 - 2);
+                }
+            }
+        },
+        |ui, cfg| {
+            dpi_tiles(ui, cfg, usb);
+            ui.label(RichText::new("Click a stage to make it active · drag or click the number to edit").small().color(WEAK));
+        },
+    );
+}
+
+fn performance_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
+    card(ui, "Performance", |ui| {
+        let link = if usb { "USB" } else { "2.4G" };
+        ui.label(RichText::new(format!("Polling rate ({link})")).color(WEAK));
+        let mut r = cfg.rate(usb);
+        let opts: Vec<(u8, String)> = settings::RATES
+            .iter()
+            .enumerate()
+            .map(|(i, hz)| (i as u8, if *hz >= 1000 { format!("{}K", hz / 1000) } else { hz.to_string() }))
+            .collect();
+        ui.horizontal(|ui| {
+            if segmented(ui, &mut r, &opts) {
+                cfg.set_rate(usb, r);
+            }
+        });
+        ui.add_space(6.0);
+
+        ui.label(RichText::new("Sensor mode").color(WEAK));
+        let mut m = cfg.sensor_mode();
+        let modes: Vec<(u8, String)> =
+            settings::SENSOR_MODES.iter().enumerate().map(|(i, n)| (i as u8, n.to_string())).collect();
+        ui.horizontal(|ui| {
+            if segmented(ui, &mut m, &modes) {
+                cfg.set_sensor_mode(m);
+            }
+        });
+        ui.add_space(6.0);
+
+        row(ui, "Lift-off distance", |ui| {
+            let mut lod = cfg.lod();
+            if segmented(ui, &mut lod, &[(1, "1 mm".into()), (2, "2 mm".into())]) {
+                cfg.set_lod(lod);
+            }
+        });
+        for (bit, name) in [(0x04, "Ripple control"), (0x08, "Angle snapping"), (0x10, "Motion sync")] {
+            row(ui, name, |ui| {
+                let mut on = cfg.flag(bit);
+                if toggle(ui, &mut on).changed() {
+                    cfg.set_flag(bit, on);
+                }
+            });
+        }
+
+        ui.add_space(4.0);
+        let slider_w = |ui: &mut egui::Ui| ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0);
+        row(ui, "Sensor angle", |ui| {
+            slider_w(ui);
+            let mut a = cfg.angle();
+            if ui.add(egui::Slider::new(&mut a, -settings::ANGLE_MAX..=settings::ANGLE_MAX).suffix("°")).changed() {
+                cfg.set_angle(a);
+            }
+        });
+        row(ui, "Button debounce", |ui| {
+            slider_w(ui);
+            let mut d = cfg.debounce();
+            if ui.add(egui::Slider::new(&mut d, 0..=settings::DEBOUNCE_MAX).suffix(" ms")).changed() {
+                cfg.set_debounce(d);
+            }
+        });
+        row(ui, "Sleep after", |ui| {
+            slider_w(ui);
+            let mut s = cfg.sleep();
+            let slider = egui::Slider::new(&mut s, 0..=settings::SLEEP_MAX)
+                .custom_formatter(|v, _| if v == 0.0 { "never".into() } else { format!("{v} min") });
+            if ui.add(slider).changed() {
+                cfg.set_sleep(s);
+            }
+        });
+    });
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let dirty = self.edit.is_some() && self.edit != self.orig;
@@ -888,124 +1013,20 @@ impl eframe::App for App {
                     return;
                 };
 
-                let ed = &mut self.buttons;
-                card(ui, "Buttons", |ui| {
-                    row(ui, settings::BUTTONS[0], |ui| {
-                        ui.label(RichText::new("Left click (fixed)").color(WEAK));
+                if ui.available_width() >= TWO_COLUMNS {
+                    ui.columns(2, |cols| {
+                        let [left, right] = cols else { return };
+                        buttons_card(left, cfg, &mut self.buttons);
+                        appearance(left, &mut self.prefs);
+                        dpi_card(right, cfg, usb);
+                        performance_card(right, cfg, usb);
                     });
-                    for i in 1..5 {
-                        let mut action = cfg.button(i);
-                        let open = ed.open == Some(i);
-                        row(ui, settings::BUTTONS[i], |ui| {
-                            if action_header(ui, action, open).clicked() {
-                                ed.toggle(i, action);
-                            }
-                        });
-                        if ed.open == Some(i) {
-                            action_editor(ui, ed, &mut action);
-                            ui.add_space(4.0);
-                        }
-                        if action != cfg.button(i) {
-                            cfg.set_button(i, action);
-                        }
-                    }
-                    row(ui, settings::BUTTONS[5], |ui| {
-                        ui.label(RichText::new("DPI cycle (fixed)").color(WEAK));
-                    });
-                });
-                card_with(
-                    ui,
-                    "DPI",
-                    cfg,
-                    |ui, cfg| {
-                        let n = cfg.stages();
-                        if ui.add_enabled(n < 6, egui::Button::new("+").min_size(Vec2::splat(26.0))).clicked() {
-                            cfg.set_stages(n + 1);
-                        }
-                        ui.label(format!("{n} stages"));
-                        if ui.add_enabled(n > 1, egui::Button::new("−").min_size(Vec2::splat(26.0))).clicked() {
-                            cfg.set_stages(n - 1);
-                            if cfg.active_stage(usb) as usize >= n - 1 {
-                                cfg.set_active_stage(n as u8 - 2);
-                            }
-                        }
-                    },
-                    |ui, cfg| {
-                        dpi_tiles(ui, cfg, usb);
-                        ui.label(RichText::new("Click a stage to make it active · drag or click the number to edit").small().color(WEAK));
-                    },
-                );
-
-                card(ui, "Performance", |ui| {
-                    let link = if usb { "USB" } else { "2.4G" };
-                    ui.label(RichText::new(format!("Polling rate ({link})")).color(WEAK));
-                    let mut r = cfg.rate(usb);
-                    let opts: Vec<(u8, String)> = settings::RATES
-                        .iter()
-                        .enumerate()
-                        .map(|(i, hz)| (i as u8, if *hz >= 1000 { format!("{}K", hz / 1000) } else { hz.to_string() }))
-                        .collect();
-                    ui.horizontal(|ui| {
-                        if segmented(ui, &mut r, &opts) {
-                            cfg.set_rate(usb, r);
-                        }
-                    });
-                    ui.add_space(6.0);
-
-                    ui.label(RichText::new("Sensor mode").color(WEAK));
-                    let mut m = cfg.sensor_mode();
-                    let modes: Vec<(u8, String)> =
-                        settings::SENSOR_MODES.iter().enumerate().map(|(i, n)| (i as u8, n.to_string())).collect();
-                    ui.horizontal(|ui| {
-                        if segmented(ui, &mut m, &modes) {
-                            cfg.set_sensor_mode(m);
-                        }
-                    });
-                    ui.add_space(6.0);
-
-                    row(ui, "Lift-off distance", |ui| {
-                        let mut lod = cfg.lod();
-                        if segmented(ui, &mut lod, &[(1, "1 mm".into()), (2, "2 mm".into())]) {
-                            cfg.set_lod(lod);
-                        }
-                    });
-                    for (bit, name) in [(0x04, "Ripple control"), (0x08, "Angle snapping"), (0x10, "Motion sync")] {
-                        row(ui, name, |ui| {
-                            let mut on = cfg.flag(bit);
-                            if toggle(ui, &mut on).changed() {
-                                cfg.set_flag(bit, on);
-                            }
-                        });
-                    }
-
-                    ui.add_space(4.0);
-                    let slider_w = |ui: &mut egui::Ui| ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0);
-                    row(ui, "Sensor angle", |ui| {
-                        slider_w(ui);
-                        let mut a = cfg.angle();
-                        if ui.add(egui::Slider::new(&mut a, -settings::ANGLE_MAX..=settings::ANGLE_MAX).suffix("°")).changed() {
-                            cfg.set_angle(a);
-                        }
-                    });
-                    row(ui, "Button debounce", |ui| {
-                        slider_w(ui);
-                        let mut d = cfg.debounce();
-                        if ui.add(egui::Slider::new(&mut d, 0..=settings::DEBOUNCE_MAX).suffix(" ms")).changed() {
-                            cfg.set_debounce(d);
-                        }
-                    });
-                    row(ui, "Sleep after", |ui| {
-                        slider_w(ui);
-                        let mut s = cfg.sleep();
-                        let slider = egui::Slider::new(&mut s, 0..=settings::SLEEP_MAX)
-                            .custom_formatter(|v, _| if v == 0.0 { "never".into() } else { format!("{v} min") });
-                        if ui.add(slider).changed() {
-                            cfg.set_sleep(s);
-                        }
-                    });
-                });
-
-                appearance(ui, &mut self.prefs);
+                } else {
+                    buttons_card(ui, cfg, &mut self.buttons);
+                    dpi_card(ui, cfg, usb);
+                    performance_card(ui, cfg, usb);
+                    appearance(ui, &mut self.prefs);
+                }
 
                 ui.vertical_centered(|ui| {
                     ui.label(
