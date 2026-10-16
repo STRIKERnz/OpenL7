@@ -281,7 +281,8 @@ impl App {
                     start_file = ui.button("Save to file").on_hover_text("Saves the settings shown below").clicked();
                     egui::ComboBox::from_id_salt("load_saved")
                         .selected_text("Load from file")
-                        .width(150.0)
+                        // leave room for Open folder in a narrow window
+                        .width((ui.available_width() - 120.0).clamp(90.0, 150.0))
                         .show_ui(ui, |ui| {
                             if saved_list.is_empty() {
                                 ui.label(RichText::new("Nothing saved yet").color(WEAK));
@@ -485,13 +486,32 @@ fn set_collapsed(title: &str, on: bool) {
 
 /// Label on the left, control filling the rest of the row.
 fn row(ui: &mut egui::Ui, label: &str, control: impl FnOnce(&mut egui::Ui)) {
+    row_tip(ui, label, None, control);
+}
+
+/// A row whose label explains the setting on hover.
+fn row_tip(ui: &mut egui::Ui, label: &str, tip: Option<&str>, control: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         // fixed-width label column so every control starts at the same x
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(LABEL_W, 28.0), Sense::hover());
-        ui.painter().text(rect.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), WEAK);
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(LABEL_W, 28.0), Sense::hover());
+        let color = if tip.is_some() && resp.hovered() { TEXT } else { WEAK };
+        ui.painter().text(rect.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), color);
+        if let Some(tip) = tip {
+            resp.on_hover_text(tip);
+        }
         control(ui);
     });
 }
+
+const TIP_RATE: &str = "How often the mouse reports to the PC. Higher feels smoother and responds sooner, but uses more battery and some CPU.";
+const TIP_MODE: &str = "How hard the sensor works. Gaming and Extreme cut latency further at the cost of battery life.";
+const TIP_LOD: &str = "How high you can lift the mouse before it stops tracking. 1 mm suits players who lift and reposition often.";
+const TIP_RIPPLE: &str = "Smooths out sensor jitter at high DPI, at the cost of a little delay.";
+const TIP_ANGLE_SNAP: &str = "Straightens slightly wobbly movements into straight lines. Usually left off for gaming.";
+const TIP_MOTION_SYNC: &str = "Lines up sensor reads with the polling rate for more even motion, adding a tiny delay.";
+const TIP_ANGLE: &str = "Rotates tracking to match how you hold the mouse, so a straight swipe comes out straight.";
+const TIP_DEBOUNCE: &str = "How long a click must settle before it counts. Lower is faster; raise it if a button double-clicks on its own.";
+const TIP_SLEEP: &str = "Idle time before the mouse sleeps to save battery.";
 
 fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let size = Vec2::new(40.0, 22.0);
@@ -876,7 +896,7 @@ fn dpi_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
 fn performance_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
     card(ui, "Performance", |ui| {
         let link = if usb { "USB" } else { "2.4G" };
-        ui.label(RichText::new(format!("Polling rate ({link})")).color(WEAK));
+        ui.label(RichText::new(format!("Polling rate ({link})")).color(WEAK)).on_hover_text(TIP_RATE);
         let mut r = cfg.rate(usb);
         let opts: Vec<(u8, String)> = settings::RATES
             .iter()
@@ -890,7 +910,7 @@ fn performance_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
         });
         ui.add_space(6.0);
 
-        ui.label(RichText::new("Sensor mode").color(WEAK));
+        ui.label(RichText::new("Sensor mode").color(WEAK)).on_hover_text(TIP_MODE);
         let mut m = cfg.sensor_mode();
         let modes: Vec<(u8, String)> =
             settings::SENSOR_MODES.iter().enumerate().map(|(i, n)| (i as u8, n.to_string())).collect();
@@ -901,14 +921,18 @@ fn performance_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
         });
         ui.add_space(6.0);
 
-        row(ui, "Lift-off distance", |ui| {
+        row_tip(ui, "Lift-off distance", Some(TIP_LOD), |ui| {
             let mut lod = cfg.lod();
             if segmented(ui, &mut lod, &[(1, "1 mm".into()), (2, "2 mm".into())]) {
                 cfg.set_lod(lod);
             }
         });
-        for (bit, name) in [(0x04, "Ripple control"), (0x08, "Angle snapping"), (0x10, "Motion sync")] {
-            row(ui, name, |ui| {
+        for (bit, name, tip) in [
+            (0x04, "Ripple control", TIP_RIPPLE),
+            (0x08, "Angle snapping", TIP_ANGLE_SNAP),
+            (0x10, "Motion sync", TIP_MOTION_SYNC),
+        ] {
+            row_tip(ui, name, Some(tip), |ui| {
                 let mut on = cfg.flag(bit);
                 if toggle(ui, &mut on).changed() {
                     cfg.set_flag(bit, on);
@@ -918,21 +942,21 @@ fn performance_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
 
         ui.add_space(4.0);
         let slider_w = |ui: &mut egui::Ui| ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0);
-        row(ui, "Sensor angle", |ui| {
+        row_tip(ui, "Sensor angle", Some(TIP_ANGLE), |ui| {
             slider_w(ui);
             let mut a = cfg.angle();
             if ui.add(egui::Slider::new(&mut a, -settings::ANGLE_MAX..=settings::ANGLE_MAX).suffix("°")).changed() {
                 cfg.set_angle(a);
             }
         });
-        row(ui, "Button debounce", |ui| {
+        row_tip(ui, "Button debounce", Some(TIP_DEBOUNCE), |ui| {
             slider_w(ui);
             let mut d = cfg.debounce();
             if ui.add(egui::Slider::new(&mut d, 0..=settings::DEBOUNCE_MAX).suffix(" ms")).changed() {
                 cfg.set_debounce(d);
             }
         });
-        row(ui, "Sleep after", |ui| {
+        row_tip(ui, "Sleep after", Some(TIP_SLEEP), |ui| {
             slider_w(ui);
             let mut s = cfg.sleep();
             let slider = egui::Slider::new(&mut s, 0..=settings::SLEEP_MAX)
