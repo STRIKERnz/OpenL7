@@ -726,24 +726,24 @@ fn runtime_path(name: &str) -> String {
     format!("{dir}/{name}")
 }
 
+/// A held exclusive flock on a runtime file, or None when another process holds it.
+pub fn try_lock(name: &str) -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let lock = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(runtime_path(name)).ok()?;
+    (unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(lock)
+}
+
 /// Only one settings window: the first one holds a flock and listens on a socket;
 /// a second launch pokes that socket (so the window comes to the front) and exits.
 fn single_instance() -> Option<(std::fs::File, std::os::unix::net::UnixDatagram)> {
-    use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixDatagram;
     let sock_path = runtime_path("openl7-gui.sock");
-    let lock = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(runtime_path("openl7-gui.lock"))
-        .ok()?;
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    let Some(lock) = try_lock("openl7-gui.lock") else {
         if let Ok(s) = UnixDatagram::unbound() {
             let _ = s.send_to(b"show", &sock_path);
         }
         return None;
-    }
+    };
     let _ = std::fs::remove_file(&sock_path);
     let sock = UnixDatagram::bind(&sock_path).ok()?;
     Some((lock, sock))
