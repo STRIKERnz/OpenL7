@@ -165,7 +165,7 @@ impl ksni::Tray for Tray {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::{CheckmarkItem, RadioGroup, RadioItem, StandardItem, SubMenu};
+        use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
         let mut items = Vec::new();
         if let (Ok(_), Some(active)) = (&self.state, self.profile) {
             items.push(
@@ -187,17 +187,6 @@ impl ksni::Tray for Tray {
             items.push(ksni::MenuItem::Separator);
         }
         items.extend([
-            CheckmarkItem {
-                label: "Show percentage on icon".into(),
-                checked: self.prefs.tray_percent,
-                activate: Box::new(|t: &mut Self| {
-                    // reload first so the accent colour set in the settings window is kept
-                    t.prefs = prefs::Prefs { tray_percent: !t.prefs.tray_percent, ..prefs::Prefs::load() };
-                    let _ = t.prefs.save();
-                }),
-                ..Default::default()
-            }
-            .into(),
             StandardItem {
                 label: "Settings…".into(),
                 icon_name: "configure".into(),

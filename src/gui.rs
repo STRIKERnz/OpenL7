@@ -585,17 +585,10 @@ fn appearance(ui: &mut egui::Ui, prefs: &mut Prefs) {
         });
     });
     if *prefs != before {
-        // merge into the file, since the tray menu can change the percentage toggle too
-        let mut saved = Prefs::load();
         if prefs.accent != before.accent {
             set_accent(ui.ctx(), prefs.accent);
-            saved.accent = prefs.accent;
         }
-        if prefs.tray_percent != before.tray_percent {
-            saved.tray_percent = prefs.tray_percent;
-        }
-        let _ = saved.save();
-        *prefs = saved;
+        let _ = prefs.save();
     }
 }
 
