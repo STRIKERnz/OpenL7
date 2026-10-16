@@ -12,10 +12,12 @@ mouse directly over hidraw, with no web driver needed.
 
 <p align="center"><img src="docs/screenshot.png" alt="OpenL7 settings window" width="420"></p>
 
-- Tray icon showing battery level, with low-battery notifications from 25% down
+- Tray icon showing battery level (optionally as a number), with low-battery notifications from 25% down
 - Settings window: DPI stages with indicator colours, polling rate, sensor mode, lift-off,
-  ripple / angle snapping / motion sync, sensor angle, debounce, sleep, button remapping
-- CLI: `openl7 --once`, `info`, `profile [1-3]`, `set <setting> <value>`
+  ripple / angle snapping / motion sync, sensor angle, debounce, sleep, button remapping,
+  onboard profiles (switch, rename, save to and load from files), accent colour
+- CLI for every mouse setting: `openl7 --help`
+- Works over the 2.4G receiver and the USB cable
 
 The protocol was worked out from the vendor's M HUB WebHID driver. Every write is read back
 and verified.
