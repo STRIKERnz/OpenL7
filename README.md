@@ -12,6 +12,7 @@ mouse directly over hidraw, with no web driver needed.
 
 <p align="center">
   <img src="docs/screenshot.png" alt="OpenL7 settings window, two columns" width="560">
+  <img src="docs/screenshot-narrow.png" alt="OpenL7 in a narrow window with two cards folded" width="300">
   <img src="docs/screenshot-folded.png" alt="OpenL7 with every card folded" width="300">
 </p>
 
