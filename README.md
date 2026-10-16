@@ -47,7 +47,7 @@ Everything stored on the mouse can be changed from a terminal too. Changes go to
 active profile and are verified like the window's.
 
 ```sh
-openl7 --once                         # battery level
+openl7 battery                        # battery level
 openl7 info                           # everything on the mouse
 openl7 set dpi 3 1600                 # DPI of stage 3
 openl7 set stage 2                    # active DPI stage

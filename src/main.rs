@@ -1,7 +1,7 @@
 //! Battery level and settings for the MCHOSE L7 Pro on Linux.
 //!
 //!   openl7          show a system tray icon (StatusNotifierItem)
-//!   openl7 --once   print the battery level and exit
+//!   openl7 battery  print the battery level and exit (`--once` still works)
 //!   openl7 info     print the mouse's onboard settings
 //!   openl7 gui      open the settings window
 
@@ -481,7 +481,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => run_tray(),
-        Some("--once") => match status() {
+        // `--once` is the original name, kept so existing scripts keep working
+        Some("battery" | "--once") => match status() {
             Ok(b) => println!("{}", describe(&b)),
             Err(e) => {
                 println!("L7 Pro: {e}");
@@ -525,7 +526,7 @@ fn main() {
             let name = std::env::args().next().unwrap_or_default();
             let name = Path::new(&name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             eprintln!(
-                "usage: {name} [--once | info | gui | profile ... | set <setting> <value>]\n  (no args)      show a system tray icon\n  --once         print battery and exit\n  gui            open the settings window\n  info           print onboard settings\n\n{PROFILE_HELP}\n\n{}\n\nUnofficial tool, not affiliated with MCHOSE. Use at your own risk.",
+                "usage: {name} [battery | info | gui | profile ... | set <setting> <value>]\n  (no args)      show a system tray icon\n  battery        print battery and exit\n  gui            open the settings window\n  info           print onboard settings\n\n{PROFILE_HELP}\n\n{}\n\nUnofficial tool, not affiliated with MCHOSE. Use at your own risk.",
                 set_help()
             );
             exit(2);
