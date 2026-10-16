@@ -3,6 +3,13 @@
 Open-source Linux tray app, settings window, and CLI for the **MCHOSE L7 Pro** mouse. It talks to the
 mouse directly over hidraw, with no web driver needed.
 
+> [!WARNING]
+> **Unofficial project. Use at your own risk.** openl7 is not made, endorsed or supported
+> by MCHOSE. It was built by reverse-engineering the M HUB web driver and writes settings
+> directly to the mouse's memory. It verifies every write, but it comes with no warranty
+> (see [LICENSE](LICENSE)). If a setting ever ends up wrong, MCHOSE's official M HUB can
+> factory-reset the mouse. Firmware updates are deliberately left to M HUB.
+
 - Tray icon showing battery level, with low-battery notifications from 25% down
 - Settings window: DPI stages with indicator colours, polling rate, sensor mode, lift-off,
   ripple / angle snapping / motion sync, sensor angle, debounce, sleep, button remapping

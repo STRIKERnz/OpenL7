@@ -399,7 +399,7 @@ fn main() {
             let name = std::env::args().next().unwrap_or_default();
             let name = Path::new(&name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             eprintln!(
-                "usage: {name} [--once | info | gui | profile [1-3] | set <setting> <value>]\n  (no args)      show a system tray icon\n  --once         print battery and exit\n  gui            open the settings window\n  info           print onboard settings\n  profile [1-3]  list onboard profiles, or switch to one\n\n{SET_HELP}"
+                "usage: {name} [--once | info | gui | profile [1-3] | set <setting> <value>]\n  (no args)      show a system tray icon\n  --once         print battery and exit\n  gui            open the settings window\n  info           print onboard settings\n  profile [1-3]  list onboard profiles, or switch to one\n\n{SET_HELP}\n\nUnofficial tool, not affiliated with MCHOSE. Use at your own risk."
             );
             exit(2);
         }

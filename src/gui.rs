@@ -517,6 +517,13 @@ impl eframe::App for App {
                         ui.label(RichText::new("DPI cycle (fixed)").color(WEAK));
                     });
                 });
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new("openl7 is unofficial and not affiliated with MCHOSE. Use at your own risk.")
+                            .small()
+                            .color(WEAK),
+                    );
+                });
             });
         });
     }
