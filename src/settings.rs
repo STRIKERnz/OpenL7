@@ -13,6 +13,13 @@ fn u16le(d: &[u8], i: usize) -> u16 {
     u16::from_le_bytes([d[i], d[i + 1]])
 }
 
+/// Config byte holding a connection's rate (high nibble) and active DPI stage (low).
+/// M HUB's read parser says byte 1 is 2.4G, but its write schema and the hardware
+/// say USB: with byte 1 at 2000 Hz the dongle measured 1000 Hz, byte 2's value.
+fn link_byte(usb: bool) -> usize {
+    if usb { 1 } else { 2 }
+}
+
 fn rate(i: u8) -> String {
     RATES.get(i as usize).map_or(format!("index {i}"), |r| format!("{r} Hz"))
 }
@@ -101,9 +108,8 @@ pub fn dump(dev: &mut Device) -> io::Result<Option<String>> {
         return Ok(Some(out));
     };
     let profile = c[0];
-    // bit fields are little-endian: the first-declared nibble is the low one
-    let (g_dpi, g_rate) = (c[1] & 0x0f, c[1] >> 4);
-    let (usb_dpi, usb_rate) = (c[2] & 0x0f, c[2] >> 4);
+    let (g_dpi, g_rate) = (c[link_byte(false)] & 0x0f, c[link_byte(false)] >> 4);
+    let (usb_dpi, usb_rate) = (c[link_byte(true)] & 0x0f, c[link_byte(true)] >> 4);
     let stages = (c[16] as usize).clamp(1, 6);
     let (sensor, debounce, sleep, rotate) = (c[17], c[18], c[19], c[49] as i8);
 
@@ -184,7 +190,7 @@ impl Config {
     }
 
     pub fn rate(&self, usb: bool) -> u8 {
-        self.0[if usb { 2 } else { 1 }] >> 4
+        self.0[link_byte(usb)] >> 4
     }
 
     pub fn debounce(&self) -> u8 {
@@ -267,7 +273,7 @@ impl Config {
     }
 
     pub fn active_stage(&self, usb: bool) -> u8 {
-        self.0[if usb { 2 } else { 1 }] & 0x0f
+        self.0[link_byte(usb)] & 0x0f
     }
 
     /// Writes the DPI table and selects `stage` with 0x12 0x40, as M HUB's DPI page
@@ -292,7 +298,7 @@ impl Config {
 
     /// Polling rate index for the 2.4G or USB connection.
     pub fn set_rate(&mut self, usb: bool, index: u8) {
-        let b = &mut self.0[if usb { 2 } else { 1 }];
+        let b = &mut self.0[link_byte(usb)];
         *b = (*b & 0x0f) | (index << 4);
     }
 
