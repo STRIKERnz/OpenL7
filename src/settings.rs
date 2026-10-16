@@ -355,7 +355,7 @@ mod tests {
         let orig = Config::read(&mut dev).unwrap().expect("no config");
 
         let mut edit = orig.clone();
-        edit.set_button(4, Action::Key(0x3a)); // Back -> F1
+        edit.set_button(4, Action::Hotkey { mods: 0x03, key: 0x17 }); // Back -> Ctrl+Shift+T
         edit.set_button(3, Action::Media(0xe9)); // Forward -> Volume up
         edit.set_sensor_mode(1);
         edit.set_angle(5);
@@ -363,7 +363,7 @@ mod tests {
         edit.set_active_stage(1);
         edit.set_dpi(4, 3000);
         let now = edit.apply(&orig, &mut dev).expect("apply");
-        assert_eq!(now.button(4), Action::Key(0x3a));
+        assert_eq!(now.button(4), Action::Hotkey { mods: 0x03, key: 0x17 });
         assert_eq!(now.button(3), Action::Media(0xe9));
         assert_eq!((now.sensor_mode(), now.angle(), now.stages()), (1, 5, 5));
         assert_eq!((now.active_stage(false), now.active_stage(true), now.dpi(4)), (1, 1, 3000));
