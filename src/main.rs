@@ -8,6 +8,8 @@
 mod buttons;
 mod gui;
 mod hid;
+mod icon;
+mod prefs;
 mod settings;
 
 use std::io::ErrorKind;
@@ -18,6 +20,8 @@ use std::time::Duration;
 
 const TRAY_LOCK: &str = "openl7-tray.lock";
 const POLL: Duration = Duration::from_secs(60);
+/// How often the tray looks for preference changes made in the settings window.
+const PREFS_POLL: Duration = Duration::from_secs(2);
 /// Warn at this level, then again at every further 5% drop.
 const LOW_BATTERY: u8 = 25;
 
@@ -60,6 +64,7 @@ struct Tray {
     switch_error: Option<String>,
     /// Lowest 5% step we've already warned about since last charge.
     warned_at: Option<u8>,
+    prefs: prefs::Prefs,
 }
 
 impl Tray {
@@ -124,11 +129,19 @@ impl ksni::Tray for Tray {
 
     fn icon_name(&self) -> String {
         match &self.state {
+            Ok(_) if self.prefs.tray_percent => String::new(),
             Ok(b) => {
                 let step = ((b.level as u32 + 5) / 10 * 10).min(100);
                 format!("battery-{step:03}{}", if b.charging { "-charging" } else { "" })
             }
             Err(_) => "input-mouse".into(),
+        }
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        match &self.state {
+            Ok(b) if self.prefs.tray_percent => vec![icon::battery_number(b.level, b.charging)],
+            _ => Vec::new(),
         }
     }
 
@@ -144,7 +157,7 @@ impl ksni::Tray for Tray {
         if let Some(e) = &self.switch_error {
             description += &format!("\nProfile switch failed: {e}");
         }
-        ksni::ToolTip { icon_name: self.icon_name(), title: self.title(), description, ..Default::default() }
+        ksni::ToolTip { icon_name: self.icon_name(), icon_pixmap: self.icon_pixmap(), title: self.title(), description, ..Default::default() }
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
@@ -152,7 +165,7 @@ impl ksni::Tray for Tray {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
+        use ksni::menu::{CheckmarkItem, RadioGroup, RadioItem, StandardItem, SubMenu};
         let mut items = Vec::new();
         if let (Ok(_), Some(active)) = (&self.state, self.profile) {
             items.push(
@@ -174,6 +187,17 @@ impl ksni::Tray for Tray {
             items.push(ksni::MenuItem::Separator);
         }
         items.extend([
+            CheckmarkItem {
+                label: "Show percentage on icon".into(),
+                checked: self.prefs.tray_percent,
+                activate: Box::new(|t: &mut Self| {
+                    // reload first so the accent colour set in the settings window is kept
+                    t.prefs = prefs::Prefs { tray_percent: !t.prefs.tray_percent, ..prefs::Prefs::load() };
+                    let _ = t.prefs.save();
+                }),
+                ..Default::default()
+            }
+            .into(),
             StandardItem {
                 label: "Settings…".into(),
                 icon_name: "configure".into(),
@@ -232,8 +256,14 @@ fn run_tray() {
 
     let Some(_lock) = gui::try_lock(TRAY_LOCK) else { return };
 
-    let mut tray =
-        Tray { state: Err("checking…".into()), profile: None, names: Vec::new(), switch_error: None, warned_at: None };
+    let mut tray = Tray {
+        state: Err("checking…".into()),
+        profile: None,
+        names: Vec::new(),
+        switch_error: None,
+        warned_at: None,
+        prefs: prefs::Prefs::load(),
+    };
     tray.refresh();
     let handle = match tray.spawn() {
         Ok(h) => h,
@@ -242,9 +272,30 @@ fn run_tray() {
             exit(1);
         }
     };
+    let mut prefs_seen = prefs::modified();
+    let mut since_refresh = Duration::ZERO;
     loop {
-        thread::sleep(POLL);
-        if handle.update(|t| t.refresh()).is_none() {
+        thread::sleep(PREFS_POLL);
+        since_refresh += PREFS_POLL;
+        let now = prefs::modified();
+        let prefs_changed = now != prefs_seen;
+        prefs_seen = now;
+        let due = since_refresh >= POLL;
+        if due {
+            since_refresh = Duration::ZERO;
+        }
+        if (due || prefs_changed)
+            && handle
+                .update(|t| {
+                    if prefs_changed {
+                        t.prefs = prefs::Prefs::load();
+                    }
+                    if due {
+                        t.refresh();
+                    }
+                })
+                .is_none()
+        {
             exit(0);
         }
     }
