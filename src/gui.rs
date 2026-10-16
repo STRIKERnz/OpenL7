@@ -416,6 +416,7 @@ fn card_with<T>(
     header: impl FnOnce(&mut egui::Ui, &mut T),
     body: impl FnOnce(&mut egui::Ui, &mut T),
 ) {
+    let collapsed = is_collapsed(title);
     egui::Frame::new()
         .fill(CARD)
         .stroke(stroke(1.0, CARD_STROKE))
@@ -424,13 +425,60 @@ fn card_with<T>(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new(title).size(16.0).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| header(ui, state));
+                let font = egui::FontId::proportional(16.0);
+                let galley = ui.painter().layout_no_wrap(title.into(), font, TEXT);
+                let size = Vec2::new(galley.size().x + 22.0, galley.size().y.max(26.0));
+                let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+                let p = ui.painter();
+                // the default font has no ▸/▾, so draw the chevron
+                let c = rect.left_center() + Vec2::new(5.0, 0.0);
+                let color = if resp.hovered() { TEXT } else { WEAK };
+                let chevron = if collapsed {
+                    vec![c + Vec2::new(-3.0, -5.0), c + Vec2::new(4.0, 0.0), c + Vec2::new(-3.0, 5.0)]
+                } else {
+                    vec![c + Vec2::new(-5.0, -3.0), c + Vec2::new(5.0, -3.0), c + Vec2::new(0.0, 4.0)]
+                };
+                p.add(egui::Shape::convex_polygon(chevron, color, Stroke::NONE));
+                p.galley(rect.left_center() + Vec2::new(18.0, -galley.size().y / 2.0), galley, TEXT);
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    set_collapsed(title, !collapsed);
+                }
+                if !collapsed {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| header(ui, state));
+                }
             });
-            ui.add_space(4.0);
-            body(ui, state);
+            if !collapsed {
+                ui.add_space(4.0);
+                body(ui, state);
+            }
         });
     ui.add_space(12.0);
+}
+
+/// Titles of the cards folded away, kept in `$XDG_CONFIG_HOME/openl7/collapsed`.
+static COLLAPSED: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+fn collapsed_path() -> std::path::PathBuf {
+    crate::prefs::config_dir().join("collapsed")
+}
+
+fn is_collapsed(title: &str) -> bool {
+    let mut c = COLLAPSED.lock().unwrap_or_else(|e| e.into_inner());
+    let list = c.get_or_insert_with(|| {
+        std::fs::read_to_string(collapsed_path()).unwrap_or_default().lines().map(str::to_string).collect()
+    });
+    list.iter().any(|t| t == title)
+}
+
+fn set_collapsed(title: &str, on: bool) {
+    let mut c = COLLAPSED.lock().unwrap_or_else(|e| e.into_inner());
+    let list = c.get_or_insert_with(Vec::new);
+    list.retain(|t| t != title);
+    if on {
+        list.push(title.to_string());
+    }
+    let _ = std::fs::create_dir_all(crate::prefs::config_dir());
+    let _ = std::fs::write(collapsed_path(), list.join("\n"));
 }
 
 /// Label on the left, control filling the rest of the row.
