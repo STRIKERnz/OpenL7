@@ -2,6 +2,7 @@
 //! the same commands M HUB uses and verified by reading back.
 
 use crate::buttons::{self, Action};
+use crate::history::{self, Sample};
 use crate::prefs::Prefs;
 use crate::settings::{self, Config, DeviceInfo};
 use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, Sense, Stroke, StrokeKind, Vec2};
@@ -141,6 +142,25 @@ struct App {
     renaming: Option<String>,
     /// The file name while the shown settings are being saved to disk.
     saving: Option<String>,
+    battery: BatteryLog,
+}
+
+/// The tray's battery history, re-read whenever the file changes.
+struct BatteryLog {
+    samples: Vec<Sample>,
+    seen: Option<std::time::SystemTime>,
+    /// Seconds of history the graph shows.
+    span: u64,
+}
+
+impl BatteryLog {
+    fn refresh(&mut self) {
+        let m = history::modified();
+        if m != self.seen {
+            self.seen = m;
+            self.samples = history::load();
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -203,6 +223,7 @@ impl App {
             profiles: Vec::new(),
             renaming: None,
             saving: None,
+            battery: BatteryLog { samples: Vec::new(), seen: None, span: DAY },
         };
         app.reload();
         app
@@ -565,11 +586,8 @@ fn segmented_tips<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options
     changed
 }
 
-fn battery_icon(ui: &mut egui::Ui, level: u8, charging: bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(30.0, 16.0), Sense::hover());
-    let body = egui::Rect::from_min_size(rect.min, Vec2::new(26.0, 16.0));
-    let nub = egui::Rect::from_min_size(egui::pos2(body.right() + 1.0, rect.center().y - 3.5), Vec2::new(3.0, 7.0));
-    let color = if charging {
+fn battery_color(level: u8, charging: bool) -> Color32 {
+    if charging {
         accent()
     } else if level <= 15 {
         BAD
@@ -577,7 +595,14 @@ fn battery_icon(ui: &mut egui::Ui, level: u8, charging: bool) {
         WARN
     } else {
         GOOD
-    };
+    }
+}
+
+fn battery_icon(ui: &mut egui::Ui, level: u8, charging: bool) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(30.0, 16.0), Sense::hover());
+    let body = egui::Rect::from_min_size(rect.min, Vec2::new(26.0, 16.0));
+    let nub = egui::Rect::from_min_size(egui::pos2(body.right() + 1.0, rect.center().y - 3.5), Vec2::new(3.0, 7.0));
+    let color = battery_color(level, charging);
     let p = ui.painter();
     p.rect_stroke(body, 3.0, stroke(1.5, WEAK), StrokeKind::Inside);
     p.rect_filled(nub, 1.0, WEAK);
@@ -856,6 +881,86 @@ fn appearance(ui: &mut egui::Ui, prefs: &mut Prefs) {
     }
 }
 
+const DAY: u64 = 24 * 3600;
+
+fn battery_card(ui: &mut egui::Ui, log: &mut BatteryLog) {
+    card(ui, "Battery", |ui| {
+        let spans = [(DAY, "24 h".to_string()), (7 * DAY, "7 days".into()), (30 * DAY, "30 days".into())];
+        ui.horizontal(|ui| {
+            segmented(ui, &mut log.span, &spans);
+        });
+        ui.add_space(6.0);
+        battery_graph(ui, &log.samples, log.span, history::now());
+        let text = match (log.samples.last(), history::hours_left(&log.samples)) {
+            (Some(s), _) if s.charging => "Charging".into(),
+            (_, Some(h)) if h >= 48.0 => format!("About {:.0} days of use left at your recent pace", h / 24.0),
+            (_, Some(h)) => format!("About {h:.0} h of use left at your recent pace"),
+            (Some(_), None) => "Time left shows once the battery has dropped a few percent since the last charge".into(),
+            (None, None) => "History is recorded while the tray icon is running".into(),
+        };
+        ui.label(RichText::new(text).small().color(WEAK));
+        // keep "now" moving and pick up the tray's new samples
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(60));
+    });
+}
+
+/// Level over the last `span` seconds, broken where there are no samples and
+/// shaded while charging; hovering shows the nearest reading.
+fn battery_graph(ui: &mut egui::Ui, samples: &[Sample], span: u64, now: u64) {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 140.0), Sense::hover());
+    let plot = egui::Rect::from_min_max(rect.min + Vec2::new(36.0, 8.0), rect.max - Vec2::new(4.0, 18.0));
+    let small = egui::FontId::proportional(11.0);
+    let p = ui.painter_at(rect);
+    for pct in [0, 50, 100] {
+        let y = plot.bottom() - plot.height() * pct as f32 / 100.0;
+        p.hline(plot.x_range(), y, stroke(1.0, CARD_STROKE));
+        p.text(egui::pos2(plot.left() - 6.0, y), egui::Align2::RIGHT_CENTER, format!("{pct}%"), small.clone(), WEAK);
+    }
+    let start_label = if span >= 2 * DAY { format!("{} days ago", span / DAY) } else { format!("{} h ago", span / 3600) };
+    p.text(plot.left_bottom() + Vec2::new(0.0, 4.0), egui::Align2::LEFT_TOP, start_label, small.clone(), WEAK);
+    p.text(plot.right_bottom() + Vec2::new(0.0, 4.0), egui::Align2::RIGHT_TOP, "now", small.clone(), WEAK);
+
+    let x_of = |t: u64| plot.right() - now.saturating_sub(t) as f32 / span as f32 * plot.width();
+    let y_of = |level: u8| plot.bottom() - level.min(100) as f32 / 100.0 * plot.height();
+    // start one sample early so the line enters from the left edge
+    let first = samples.partition_point(|s| s.t + span < now).saturating_sub(1);
+    let shown = &samples[first..];
+    if shown.iter().all(|s| s.t + span < now) {
+        p.text(plot.center(), egui::Align2::CENTER_CENTER, "No readings in this range", small, WEAK);
+        return;
+    }
+    let lines = ui.painter_at(plot.expand(2.0));
+    for w in shown.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if b.t.saturating_sub(a.t) > history::GAP {
+            continue;
+        }
+        let (pa, pb) = (egui::pos2(x_of(a.t), y_of(a.level)), egui::pos2(x_of(b.t), y_of(b.level)));
+        if a.charging {
+            let under = vec![pa, pb, egui::pos2(pb.x, plot.bottom()), egui::pos2(pa.x, plot.bottom())];
+            lines.add(egui::Shape::convex_polygon(under, accent().gamma_multiply(0.2), Stroke::NONE));
+        }
+        lines.line_segment([pa, pb], stroke(2.0, battery_color(a.level, a.charging)));
+    }
+    // a lone reading (tray just started, or right after a gap) still shows as a dot
+    if let Some(last) = shown.last() {
+        lines.circle_filled(egui::pos2(x_of(last.t), y_of(last.level)), 3.0, battery_color(last.level, last.charging));
+    }
+
+    if let Some(pos) = resp.hover_pos().filter(|p| plot.x_range().contains(p.x)) {
+        let t = now.saturating_sub(((plot.right() - pos.x) / plot.width() * span as f32) as u64);
+        let nearest = shown.iter().min_by_key(|s| s.t.abs_diff(t)).filter(|s| s.t.abs_diff(t) <= history::GAP);
+        if let Some(s) = nearest {
+            let x = x_of(s.t);
+            lines.vline(x, plot.y_range(), stroke(1.0, WEAK));
+            let text = format!("{}%{} · {}", s.level, if s.charging { " charging" } else { "" }, history::ago(now.saturating_sub(s.t)));
+            let align = if x > plot.center().x { egui::Align2::RIGHT_TOP } else { egui::Align2::LEFT_TOP };
+            let at = egui::pos2(x + if x > plot.center().x { -6.0 } else { 6.0 }, plot.top());
+            p.text(at, align, text, egui::FontId::proportional(12.0), TEXT);
+        }
+    }
+}
+
 fn buttons_card(ui: &mut egui::Ui, cfg: &mut Config, ed: &mut ButtonEditor) {
     card(ui, "Buttons", |ui| {
         row(ui, settings::BUTTONS[0], |ui| {
@@ -989,6 +1094,7 @@ fn performance_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let dirty = self.edit.is_some() && self.edit != self.orig;
+        self.battery.refresh();
 
         egui::TopBottomPanel::bottom("actions")
             .frame(egui::Frame::new().fill(CARD).inner_margin(Margin::symmetric(16, 12)).stroke(stroke(1.0, CARD_STROKE)))
@@ -1051,6 +1157,7 @@ impl eframe::App for App {
                     card(ui, "Not connected", |ui| {
                         ui.label(RichText::new(&self.message).color(WEAK));
                     });
+                    battery_card(ui, &mut self.battery);
                     appearance(ui, &mut self.prefs);
                     return;
                 };
@@ -1062,11 +1169,13 @@ impl eframe::App for App {
                         appearance(left, &mut self.prefs);
                         dpi_card(right, cfg, usb);
                         performance_card(right, cfg, usb);
+                        battery_card(right, &mut self.battery);
                     });
                 } else {
                     buttons_card(ui, cfg, &mut self.buttons);
                     dpi_card(ui, cfg, usb);
                     performance_card(ui, cfg, usb);
+                    battery_card(ui, &mut self.battery);
                     appearance(ui, &mut self.prefs);
                 }
 

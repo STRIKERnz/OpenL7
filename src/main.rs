@@ -8,6 +8,7 @@
 mod buttons;
 mod gui;
 mod hid;
+mod history;
 mod icon;
 mod prefs;
 mod saved;
@@ -66,12 +67,14 @@ struct Tray {
     /// Lowest 5% step we've already warned about since last charge.
     warned_at: Option<u8>,
     prefs: prefs::Prefs,
+    history: history::Recorder,
 }
 
 impl Tray {
     fn refresh(&mut self) {
         self.state = status();
-        if self.state.is_ok() {
+        if let Ok(b) = &self.state {
+            self.history.record(b.level, b.charging);
             if let Ok(mut dev) = open_device() {
                 self.profile = settings::active_profile(&mut dev).ok().flatten();
                 // re-read every time so a rename in the settings window shows up
@@ -252,6 +255,7 @@ fn run_tray() {
         switch_error: None,
         warned_at: None,
         prefs: prefs::Prefs::load(),
+        history: history::Recorder::new(),
     };
     tray.refresh();
     let handle = match tray.spawn() {

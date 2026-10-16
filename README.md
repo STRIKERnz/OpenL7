@@ -17,6 +17,8 @@ mouse directly over hidraw, with no web driver needed.
 </p>
 
 - Tray icon showing battery level (optionally as a number), with low-battery notifications from 25% down
+- Battery history graph (24 h / 7 / 30 days) with an estimate of the use left, recorded
+  while the tray runs
 - Settings window: DPI stages with indicator colours, polling rate, sensor mode, lift-off,
   ripple / angle snapping / motion sync, sensor angle, debounce, sleep, button remapping,
   onboard profiles (switch, rename, save to and load from files), accent colour
