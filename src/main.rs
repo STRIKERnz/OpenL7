@@ -299,7 +299,23 @@ const SET_HELP: &str = "settings (apply to the active profile):
   set lod <1|2>                 lift-off distance (mm)
   set ripple <on|off>           ripple control
   set angle-snap <on|off>       angle snapping
-  set motion-sync <on|off>      motion sync";
+  set motion-sync <on|off>      motion sync
+  set mode <performance|gaming|extreme>   sensor mode
+  set angle <-30-30>            sensor angle (degrees)
+  set button <middle|right|forward|back> <action>
+      action: a key (f13, page-down), a combo (ctrl+shift+t), or one of
+      {ACTIONS}";
+
+fn set_help() -> String {
+    SET_HELP.replace("{ACTIONS}", &buttons::action_names().join(", "))
+}
+
+const PROFILE_HELP: &str = "profiles:
+  profile                       list onboard and saved profiles
+  profile <1-3>                 switch to an onboard profile
+  profile rename <1-3> <name>   rename an onboard profile
+  profile save <name>           save the active profile's settings to a file
+  profile load <name>           write a saved file's settings to the active profile";
 
 fn parse_num<T: std::str::FromStr>(s: Option<&String>, what: &str) -> Result<T, String> {
     s.ok_or(format!("missing {what}"))?.parse().map_err(|_| format!("bad {what}"))
@@ -313,20 +329,47 @@ fn parse_on_off(s: Option<&String>) -> Result<bool, String> {
     }
 }
 
-/// `profile` lists the onboard profiles; `profile <1-3>` switches to one.
-fn profile(arg: Option<&String>) -> Result<(), String> {
+fn profile(args: &[String]) -> Result<(), String> {
     let mut dev = open_device()?;
     let io = |e: std::io::Error| e.to_string();
-    if let Some(a) = arg {
-        let n: u8 = a.parse().map_err(|_| "profile must be 1-3")?;
-        if !(1..=settings::PROFILES).contains(&n) {
-            return Err("profile must be 1-3".into());
+    let index = |a: Option<&String>| -> Result<u8, String> {
+        let n: u8 = parse_num(a, "profile")?;
+        if (1..=settings::PROFILES).contains(&n) { Ok(n - 1) } else { Err("profile must be 1-3".into()) }
+    };
+    match args.first().map(String::as_str) {
+        None => {}
+        Some("rename") => {
+            let i = index(args.get(1))?;
+            let name = args[2.min(args.len())..].join(" ");
+            settings::rename_profile(&mut dev, i, &name)?;
         }
-        settings::switch_profile(&mut dev, n - 1)?;
+        Some("save") => {
+            let name = args[1..].join(" ");
+            let cfg = settings::Config::read(&mut dev).map_err(io)?.ok_or("asleep / not connected")?;
+            let path = saved::save(&name, &cfg)?;
+            println!("L7 Pro: saved to {}", path.display());
+            return Ok(());
+        }
+        Some("load") => {
+            let name = args[1..].join(" ");
+            let found = saved::list().into_iter().find(|s| s.name == name.trim());
+            let path = found.ok_or(format!("no saved profile \"{}\" in {}", name.trim(), saved::dir().display()))?.path;
+            let orig = settings::Config::read(&mut dev).map_err(io)?.ok_or("asleep / not connected")?;
+            let mut cfg = saved::load(&path)?;
+            cfg.0[0] = orig.0[0]; // stays on the active profile
+            cfg.apply(&orig, &mut dev)?;
+            println!("L7 Pro: loaded \"{}\" into profile {} (saved, verified)", name.trim(), orig.0[0] + 1);
+            return Ok(());
+        }
+        Some(_) => settings::switch_profile(&mut dev, index(args.first())?)?,
     }
     let active = settings::active_profile(&mut dev).map_err(io)?.ok_or("asleep / not connected")?;
     for (i, name) in settings::profile_names(&mut dev).map_err(io)?.iter().enumerate() {
         println!("{} {}  {}", if i == active as usize { "*" } else { " " }, i + 1, name);
+    }
+    let files = saved::list();
+    if !files.is_empty() {
+        println!("saved: {}", files.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", "));
     }
     Ok(())
 }
@@ -401,7 +444,33 @@ fn set(args: &[String]) -> Result<(), String> {
             cfg.set_flag(bit, on);
             format!("{flag} {}", if on { "on" } else { "off" })
         }
-        _ => return Err(format!("unknown setting\n\n{SET_HELP}")),
+        Some("mode") => {
+            let want = a.ok_or("missing mode")?.to_lowercase();
+            let m = settings::SENSOR_MODES
+                .iter()
+                .position(|n| n.to_lowercase() == want)
+                .ok_or("mode must be performance, gaming or extreme")?;
+            cfg.set_sensor_mode(m as u8);
+            format!("sensor mode = {}", settings::SENSOR_MODES[m])
+        }
+        Some("angle") => {
+            let deg: i8 = parse_num(a, "angle")?;
+            if !(-settings::ANGLE_MAX..=settings::ANGLE_MAX).contains(&deg) {
+                return Err(format!("angle must be -{0} to {0}", settings::ANGLE_MAX));
+            }
+            cfg.set_angle(deg);
+            format!("sensor angle = {deg}°")
+        }
+        Some("button") => {
+            let which = a.ok_or("missing button")?.to_lowercase();
+            let i = (1..5)
+                .find(|&i| settings::BUTTONS[i].to_lowercase() == which)
+                .ok_or("button must be middle, right, forward or back")?;
+            let action = buttons::parse(b.ok_or("missing action")?).ok_or(format!("unknown action\n\n{}", set_help()))?;
+            cfg.set_button(i, action);
+            format!("{} button = {}", settings::BUTTONS[i], action.label())
+        }
+        _ => return Err(format!("unknown setting\n\n{}", set_help())),
     };
     cfg.write(&mut dev)?;
     println!("L7 Pro: {summary} (saved, verified)");
@@ -427,7 +496,7 @@ fn main() {
             }
         }
         Some("profile") => {
-            if let Err(e) = profile(args.get(1)) {
+            if let Err(e) = profile(&args[1..]) {
                 eprintln!("L7 Pro: {e}");
                 exit(1);
             }
@@ -456,7 +525,8 @@ fn main() {
             let name = std::env::args().next().unwrap_or_default();
             let name = Path::new(&name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             eprintln!(
-                "usage: {name} [--once | info | gui | profile [1-3] | set <setting> <value>]\n  (no args)      show a system tray icon\n  --once         print battery and exit\n  gui            open the settings window\n  info           print onboard settings\n  profile [1-3]  list onboard profiles, or switch to one\n\n{SET_HELP}\n\nUnofficial tool, not affiliated with MCHOSE. Use at your own risk."
+                "usage: {name} [--once | info | gui | profile ... | set <setting> <value>]\n  (no args)      show a system tray icon\n  --once         print battery and exit\n  gui            open the settings window\n  info           print onboard settings\n\n{PROFILE_HELP}\n\n{}\n\nUnofficial tool, not affiliated with MCHOSE. Use at your own risk.",
+                set_help()
             );
             exit(2);
         }

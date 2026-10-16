@@ -226,9 +226,86 @@ impl Action {
     }
 }
 
+/// Command-line name for a table label: "Play / pause" -> "play-pause", "DPI +" -> "dpi-up".
+fn slug(label: &str) -> String {
+    label.replace(" / ", "-").replace(" +", "-up").replace(" -", "-down").replace(' ', "-").to_lowercase()
+}
+
+/// The named actions `parse` accepts, besides keys and key combos.
+pub fn action_names() -> Vec<String> {
+    let mut names = vec!["default".to_string(), "disabled".to_string()];
+    names.extend(MOUSE.iter().map(|(_, n)| slug(n)));
+    names.extend(MEDIA.iter().map(|(_, n)| slug(n)));
+    names.extend(DPI.iter().map(|(_, n)| slug(n)));
+    names.extend(SYSTEM.iter().map(|(_, n)| slug(n)));
+    names
+}
+
+/// HID usage for a key by its display name, ignoring case, spaces and dashes
+/// ("f13", "page-down", "left-shift").
+fn key_by_name(name: &str) -> Option<u8> {
+    let norm = |s: &str| if s == "-" { s.to_string() } else { s.to_lowercase().replace([' ', '-'], "") };
+    let want = norm(name);
+    (0x04..=0xe7u8).find(|&c| norm(&key_name(c)) == want)
+}
+
+/// Parses a command-line action: a named one (see `action_names`), a key ("f13"),
+/// or a combo ("ctrl+shift+t").
+pub fn parse(s: &str) -> Option<Action> {
+    let s = s.trim().to_lowercase();
+    match s.as_str() {
+        "default" => return Some(Action::Default),
+        "disabled" => return Some(Action::Disabled),
+        _ => {}
+    }
+    if let Some((v, _)) = MOUSE.iter().find(|(_, n)| slug(n) == s) {
+        return Some(Action::Mouse(*v));
+    }
+    if let Some((v, _)) = MEDIA.iter().find(|(_, n)| slug(n) == s) {
+        return Some(Action::Media(*v));
+    }
+    if let Some((v, _)) = DPI.iter().find(|(_, n)| slug(n) == s) {
+        return Some(Action::Dpi(*v));
+    }
+    if let Some((v, _)) = SYSTEM.iter().find(|(_, n)| slug(n) == s) {
+        return Some(Action::System(*v));
+    }
+    let mut parts: Vec<&str> = s.split('+').collect();
+    let key = key_by_name(parts.pop()?)?;
+    let mut mods = 0;
+    for m in parts {
+        mods |= match m {
+            "ctrl" | "control" => CTRL,
+            "shift" => SHIFT,
+            "alt" => ALT,
+            "super" | "meta" | "win" => SUPER,
+            _ => return None,
+        };
+    }
+    Some(if mods == 0 { Action::Key(key) } else { Action::Hotkey { mods, key } })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_cli_actions() {
+        assert_eq!(parse("ctrl+shift+t"), Some(Action::Hotkey { mods: CTRL | SHIFT, key: 0x17 }));
+        assert_eq!(parse("F13"), Some(Action::Key(0x68)));
+        assert_eq!(parse("left-shift"), Some(Action::Key(0xe1)));
+        assert_eq!(parse("page-down"), Some(Action::Key(0x4e)));
+        assert_eq!(parse("play-pause"), Some(Action::Media(0xcd)));
+        assert_eq!(parse("dpi-up"), Some(Action::Dpi(2)));
+        assert_eq!(parse("middle-click"), Some(Action::Mouse([0x04, 0, 0])));
+        assert_eq!(parse("brightness-down"), Some(Action::System([0x0c, 0x70, 0])));
+        assert_eq!(parse("disabled"), Some(Action::Disabled));
+        assert_eq!(parse("hyper+t"), None);
+        assert_eq!(parse("nonsense"), None);
+        for name in action_names() {
+            assert!(parse(&name).is_some(), "{name}");
+        }
+    }
 
     #[test]
     fn round_trips_and_m_hub_values() {
