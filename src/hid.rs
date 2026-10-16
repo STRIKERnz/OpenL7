@@ -16,23 +16,40 @@ const ACK_TIMEOUT: Duration = Duration::from_millis(600);
 const ATTEMPTS: usize = 4;
 
 /// The vendor-defined interface of the mouse/dongle (the one with report 0x11).
+/// With the cable plugged in, the mouse and the receiver each have one, and only
+/// the one carrying the mouse answers, so with several the first that does wins.
 pub fn find_hidraw() -> Option<String> {
-    let mut entries: Vec<_> = fs::read_dir("/sys/class/hidraw").ok()?.flatten().map(|e| e.path()).collect();
-    entries.sort();
-    let id = format!("HID_ID=0003:0000{VENDOR_ID:04X}:");
-    for path in entries {
-        let dev = path.join("device");
-        let Ok(uevent) = fs::read_to_string(dev.join("uevent")) else { continue };
-        let Ok(desc) = fs::read(dev.join("report_descriptor")) else { continue };
-        if !uevent.contains(&id) {
-            continue;
-        }
-        // vendor usage page (06 xx ff) and a report ID 0x11 item (85 11)
-        if desc.len() > 3 && desc[0] == 0x06 && desc[2] == 0xff && desc.windows(2).any(|w| w == [0x85, 0x11]) {
-            return Some(format!("/dev/{}", path.file_name()?.to_string_lossy()));
+    let found = candidates();
+    if found.len() > 1 {
+        if let Some(p) = found.iter().find(|p| Device::open(p).is_ok_and(|mut d| d.answers())) {
+            return Some(p.clone());
         }
     }
-    None
+    found.into_iter().next()
+}
+
+fn candidates() -> Vec<String> {
+    let Ok(dir) = fs::read_dir("/sys/class/hidraw") else { return Vec::new() };
+    let mut entries: Vec<_> = dir.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    let id = format!("HID_ID=0003:0000{VENDOR_ID:04X}:");
+    entries
+        .into_iter()
+        .filter(|path| {
+            let dev = path.join("device");
+            let (Ok(uevent), Ok(desc)) = (fs::read_to_string(dev.join("uevent")), fs::read(dev.join("report_descriptor")))
+            else {
+                return false;
+            };
+            // vendor usage page (06 xx ff) and a report ID 0x11 item (85 11)
+            uevent.contains(&id)
+                && desc.len() > 3
+                && desc[0] == 0x06
+                && desc[2] == 0xff
+                && desc.windows(2).any(|w| w == [0x85, 0x11])
+        })
+        .filter_map(|path| Some(format!("/dev/{}", path.file_name()?.to_string_lossy())))
+        .collect()
 }
 
 pub struct Device {
@@ -93,6 +110,21 @@ impl Device {
             }
         }
         Ok(false)
+    }
+
+    /// One quick device-info request: does a mouse answer on this interface?
+    fn answers(&mut self) -> bool {
+        let mut req = vec![0xffu8; 21];
+        req[0] = 0x11;
+        req[1] = 0x06 ^ 0xff;
+        self.drain();
+        if self.ioctl(0x06, &mut req).is_err() || !self.wait_ack(0x06).unwrap_or(false) {
+            return false;
+        }
+        let mut buf = vec![0u8; 21];
+        buf[0] = 0x11;
+        // a receiver with no mouse linked can still answer, with zeroed ids
+        self.ioctl(0x07, &mut buf).is_ok() && buf[1] ^ 0xff == 0x06 && (buf[2] ^ 0xff, buf[3] ^ 0xff) != (0, 0)
     }
 
     /// Sends a write command and waits for the e5 ack. Returns false if it never came.
