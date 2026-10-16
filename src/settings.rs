@@ -24,11 +24,37 @@ fn rate(i: u8) -> String {
     RATES.get(i as usize).map_or(format!("index {i}"), |r| format!("{r} Hz"))
 }
 
-/// Profile names are stored NUL-terminated UTF-8 after the index byte.
+/// Profile names are stored NUL-terminated UTF-8 after the index byte. M HUB
+/// appends `$<source>$<id>` to names of profiles it downloaded; that part is hidden.
 fn profile_name(d: &[u8]) -> String {
     let s = &d[1..];
     let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
-    String::from_utf8_lossy(&s[..end]).into_owned()
+    let name = String::from_utf8_lossy(&s[..end]);
+    name.split('$').next().unwrap_or_default().to_string()
+}
+
+/// Longest name the 0x12 0x59 frame holds: 64 bytes less the command and index.
+pub const NAME_MAX: usize = 62;
+
+/// Renames an onboard profile with 0x12 0x59 (as M HUB's profile editor does),
+/// then reads the name back to confirm.
+pub fn rename_profile(dev: &mut Device, index: u8, name: &str) -> Result<(), String> {
+    let io = |e: io::Error| e.to_string();
+    let name = name.trim();
+    if name.is_empty() || name.len() > NAME_MAX || name.contains('$') {
+        return Err(format!("name must be 1-{NAME_MAX} bytes, without $"));
+    }
+    let mut packet = vec![0x59, index];
+    packet.extend_from_slice(name.as_bytes());
+    if !dev.send(0x12, &packet).map_err(io)? {
+        return Err("mouse didn't acknowledge the rename".into());
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200)); // M HUB waits too
+    match dev.query(0x12, &[0x68, index]).map_err(io)? {
+        Some(d) if profile_name(&d) == name => Ok(()),
+        Some(d) => Err(format!("mouse kept the name \"{}\"", profile_name(&d))),
+        None => Err("couldn't read the name back".into()),
+    }
 }
 
 pub const PROFILES: u8 = 3;
@@ -176,6 +202,11 @@ impl Config {
 
     pub fn stages(&self) -> usize {
         (self.0[16] as usize).clamp(1, 6)
+    }
+
+    /// Index of the onboard profile this config belongs to.
+    pub fn profile(&self) -> u8 {
+        self.0[0]
     }
 
     pub fn set_stages(&mut self, n: usize) {
@@ -377,5 +408,18 @@ mod tests {
         let back = orig.apply(&now, &mut dev).expect("restore");
         let same = |a: &Config, b: &Config| a.0[..50] == b.0[..50] && a.0[51..63] == b.0[51..63];
         assert!(same(&back, &orig), "restore mismatch:\n{:02x?}\n{:02x?}", back.0, orig.0);
+    }
+
+    /// Renames profile 3 (multi-byte UTF-8 included), then puts the old name back.
+    #[test]
+    #[ignore]
+    fn hardware_rename_round_trip() {
+        let path = crate::hid::find_hidraw().expect("mouse not found");
+        let mut dev = Device::open(&path).unwrap();
+        let orig = profile_names(&mut dev).unwrap()[2].clone();
+        rename_profile(&mut dev, 2, "OpenL7 tést").expect("rename");
+        assert_eq!(profile_names(&mut dev).unwrap()[2], "OpenL7 tést");
+        rename_profile(&mut dev, 2, &orig).expect("restore");
+        assert_eq!(profile_names(&mut dev).unwrap()[2], orig);
     }
 }

@@ -105,6 +105,27 @@ fn setup_style(ctx: &egui::Context) {
     });
 }
 
+/// egui's fonts have no CJK glyphs, and M HUB names profiles in Chinese, so fall
+/// back to whatever font fontconfig picks for Chinese, if there is one.
+fn add_cjk_fallback(ctx: &egui::Context) {
+    let Ok(out) = std::process::Command::new("fc-match").args(["-f", "%{file}\n%{index}", "sans:lang=zh-cn"]).output()
+    else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let (Some(file), index) = (lines.next(), lines.next().and_then(|i| i.parse().ok()).unwrap_or(0)) else { return };
+    let Ok(bytes) = std::fs::read(file) else { return };
+    let mut fonts = egui::FontDefinitions::default();
+    let mut data = egui::FontData::from_owned(bytes);
+    data.index = index;
+    fonts.font_data.insert("cjk".into(), data.into());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("cjk".into());
+    }
+    ctx.set_fonts(fonts);
+}
+
 struct App {
     info: Option<DeviceInfo>,
     orig: Option<Config>,
@@ -113,6 +134,9 @@ struct App {
     error: bool,
     buttons: ButtonEditor,
     prefs: Prefs,
+    profiles: Vec<String>,
+    /// The new name while a profile is being renamed.
+    renaming: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -163,6 +187,7 @@ impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
         let prefs = Prefs::load();
         set_accent(&cc.egui_ctx, prefs.accent);
+        add_cjk_fallback(&cc.egui_ctx);
         let mut app = Self {
             info: None,
             orig: None,
@@ -171,6 +196,8 @@ impl App {
             error: false,
             buttons: ButtonEditor::new(),
             prefs,
+            profiles: Vec::new(),
+            renaming: None,
         };
         app.reload();
         app
@@ -180,10 +207,12 @@ impl App {
         let result = crate::open_device().and_then(|mut d| {
             let info = settings::device_info(&mut d).map_err(|e| e.to_string())?;
             let cfg = settings::Config::read(&mut d).map_err(|e| e.to_string())?;
-            Ok((info, cfg))
+            let names = settings::profile_names(&mut d).map_err(|e| e.to_string())?;
+            Ok((info, cfg, names))
         });
         match result {
-            Ok((Some(info), Some(cfg))) => {
+            Ok((Some(info), Some(cfg), names)) => {
+                self.profiles = names;
                 self.info = Some(info);
                 self.orig = Some(cfg.clone());
                 self.edit = Some(cfg);
@@ -192,6 +221,76 @@ impl App {
             }
             Ok(_) => self.fail("Mouse is asleep or not connected. Move it and press Refresh."),
             Err(e) => self.fail(&e),
+        }
+    }
+
+    fn profile_label(&self, i: u8) -> String {
+        match self.profiles.get(i as usize) {
+            Some(n) if !n.is_empty() => n.clone(),
+            _ => format!("Profile {}", i + 1),
+        }
+    }
+
+    /// Profile picker and rename. Switching is blocked while there are unsaved edits,
+    /// since the mouse loads the other profile's settings over them.
+    fn profile_card(&mut self, ui: &mut egui::Ui, dirty: bool) {
+        let Some(active) = self.edit.as_ref().map(Config::profile) else { return };
+        let labels: Vec<(u8, String)> = (0..settings::PROFILES).map(|i| (i, self.profile_label(i))).collect();
+        let mut chosen = active;
+        let (mut start, mut save, mut cancel) = (false, false, false);
+        let renaming = &mut self.renaming;
+        card(ui, "Profile", |ui| {
+            ui.add_enabled_ui(!dirty, |ui| ui.horizontal(|ui| segmented(ui, &mut chosen, &labels)))
+                .response
+                .on_disabled_hover_text("Apply or revert your changes first");
+            ui.horizontal(|ui| match renaming {
+                Some(name) => {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(name)
+                            .char_limit(settings::NAME_MAX)
+                            .desired_width(ui.available_width() - 150.0),
+                    );
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    save = ui.button("Save").clicked() || enter;
+                    cancel = ui.button("Cancel").clicked();
+                }
+                None => {
+                    ui.label(RichText::new("Changes below are saved to this profile").small().color(WEAK));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        start = ui.button("Rename").clicked();
+                    });
+                }
+            });
+        });
+        if start {
+            self.renaming = Some(labels[active as usize].1.clone());
+        }
+        if cancel {
+            self.renaming = None;
+        }
+        if save {
+            let name = self.renaming.take().unwrap_or_default();
+            match crate::open_device().and_then(|mut d| settings::rename_profile(&mut d, active, &name)) {
+                Ok(()) => {
+                    self.profiles[active as usize] = name.trim().to_string();
+                    self.message = "Profile renamed".into();
+                    self.error = false;
+                }
+                Err(e) => {
+                    self.renaming = Some(name);
+                    self.fail(&format!("Rename failed: {e}"));
+                }
+            }
+        }
+        if chosen != active {
+            self.renaming = None;
+            match crate::open_device().and_then(|mut d| settings::switch_profile(&mut d, chosen)) {
+                Ok(()) => {
+                    self.reload();
+                    self.message = format!("Switched to {}", labels[chosen as usize].1);
+                }
+                Err(e) => self.fail(&format!("Switch failed: {e}")),
+            }
         }
     }
 
@@ -649,6 +748,8 @@ impl eframe::App for App {
                     });
                 });
                 ui.add_space(14.0);
+
+                self.profile_card(ui, dirty);
 
                 let usb = self.info.as_ref().is_some_and(|i| i.wired);
                 let Some(cfg) = self.edit.as_mut() else {

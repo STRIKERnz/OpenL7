@@ -73,9 +73,8 @@ impl Tray {
         if self.state.is_ok() {
             if let Ok(mut dev) = open_device() {
                 self.profile = settings::active_profile(&mut dev).ok().flatten();
-                if self.names.iter().all(String::is_empty) {
-                    self.names = settings::profile_names(&mut dev).unwrap_or_default();
-                }
+                // re-read every time so a rename in the settings window shows up
+                self.names = settings::profile_names(&mut dev).unwrap_or_default();
             }
         }
         match &self.state {
