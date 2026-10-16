@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=OpenL7
+Comment=MCHOSE L7 Pro battery tray icon
+Exec=@BIN@
+Icon=input-mouse-battery
+NoDisplay=true

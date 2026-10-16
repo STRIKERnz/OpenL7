@@ -1,0 +1,3 @@
+# Lets the logged-in user talk to MCHOSE mice and receivers (vendor 5253) without root.
+# Numbered below 73 so systemd's uaccess rule sees the tag.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="5253", TAG+="uaccess"
