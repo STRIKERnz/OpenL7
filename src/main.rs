@@ -16,6 +16,7 @@ use std::process::{exit, Command};
 use std::thread;
 use std::time::Duration;
 
+const TRAY_LOCK: &str = "openl7-tray.lock";
 const POLL: Duration = Duration::from_secs(60);
 /// Warn at this level, then again at every further 5% drop.
 const LOW_BATTERY: u8 = 25;
@@ -213,8 +214,23 @@ fn open_settings_window() {
     }
 }
 
+/// Starts the tray in the background unless one is already running, so launching
+/// the settings window from the app menu brings the battery icon back too.
+fn ensure_tray() {
+    use std::os::unix::process::CommandExt;
+    if gui::try_lock(TRAY_LOCK).is_none() {
+        return;
+    }
+    // the lock is dropped here; the new tray takes it
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = Command::new(exe).process_group(0).spawn();
+    }
+}
+
 fn run_tray() {
     use ksni::blocking::TrayMethods;
+
+    let Some(_lock) = gui::try_lock(TRAY_LOCK) else { return };
 
     let mut tray =
         Tray { state: Err("checking…".into()), profile: None, names: Vec::new(), switch_error: None, warned_at: None };
@@ -364,6 +380,7 @@ fn main() {
             }
         },
         Some("gui") => {
+            ensure_tray();
             if let Err(e) = gui::run() {
                 eprintln!("L7 Pro: {e}");
                 exit(1);
