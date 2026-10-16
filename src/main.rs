@@ -1,9 +1,9 @@
 //! Battery level and settings for the MCHOSE L7 Pro on Linux.
 //!
-//!   l7-battery          show a system tray icon (StatusNotifierItem)
-//!   l7-battery --once   print the battery level and exit
-//!   l7-battery info     print the mouse's onboard settings
-//!   l7-battery gui      open the settings window
+//!   openl7          show a system tray icon (StatusNotifierItem)
+//!   openl7 --once   print the battery level and exit
+//!   openl7 info     print the mouse's onboard settings
+//!   openl7 gui      open the settings window
 
 mod buttons;
 mod gui;
@@ -107,7 +107,7 @@ impl Tray {
 
 impl ksni::Tray for Tray {
     fn id(&self) -> String {
-        "mchose-l7-battery".into()
+        "openl7".into()
     }
 
     fn category(&self) -> ksni::Category {

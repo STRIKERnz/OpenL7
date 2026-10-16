@@ -44,7 +44,7 @@ pub struct Device {
 
 fn lock() -> Option<File> {
     let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    let f = OpenOptions::new().create(true).write(true).truncate(false).open(format!("{dir}/l7-battery.lock")).ok()?;
+    let f = OpenOptions::new().create(true).write(true).truncate(false).open(format!("{dir}/openl7.lock")).ok()?;
     unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) };
     Some(f)
 }

@@ -1,8 +1,9 @@
 [package]
-name = "l7-battery"
+name = "openl7"
 version = "0.1.0"
 edition = "2021"
-description = "Battery level for the MCHOSE L7 Pro mouse (CLI + system tray)"
+description = "Linux tray app, settings window and CLI for the MCHOSE L7 Pro mouse"
+license = "MIT"
 
 [dependencies]
 ksni = { version = "0.3", features = ["blocking"] }

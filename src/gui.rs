@@ -532,12 +532,12 @@ fn runtime_path(name: &str) -> String {
 fn single_instance() -> Option<(std::fs::File, std::os::unix::net::UnixDatagram)> {
     use std::os::fd::AsRawFd;
     use std::os::unix::net::UnixDatagram;
-    let sock_path = runtime_path("l7-battery-gui.sock");
+    let sock_path = runtime_path("openl7-gui.sock");
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(false)
-        .open(runtime_path("l7-battery-gui.lock"))
+        .open(runtime_path("openl7-gui.lock"))
         .ok()?;
     if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         if let Ok(s) = UnixDatagram::unbound() {
@@ -555,7 +555,7 @@ pub fn run() -> Result<(), String> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("L7 Pro Settings")
-            .with_app_id("l7-battery")
+            .with_app_id("openl7")
             .with_inner_size([480.0, 860.0])
             .with_min_inner_size([420.0, 480.0]),
         ..Default::default()
