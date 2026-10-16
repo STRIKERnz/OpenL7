@@ -1,0 +1,14 @@
+[package]
+name = "l7-battery"
+version = "0.1.0"
+edition = "2021"
+description = "Battery level for the MCHOSE L7 Pro mouse (CLI + system tray)"
+
+[dependencies]
+ksni = { version = "0.3", features = ["blocking"] }
+libc = "0.2"
+eframe = "0.31"
+
+[profile.release]
+strip = true
+lto = true
