@@ -1,0 +1,28 @@
+# Builds the release archive when a GitHub release is published. Ubuntu 22.04 is
+# used for its older glibc (2.35): a binary built on a rolling distro won't start
+# on Debian stable or Ubuntu LTS.
+name: release
+on:
+  release:
+    types: [published]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --release --locked
+      - run: cargo build --release --locked
+      - name: Package
+        run: |
+          dir="openl7-${GITHUB_REF_NAME}-x86_64-linux"
+          mkdir "$dir"
+          cp target/release/openl7 install.sh README.md LICENSE "$dir/"
+          cp -r packaging "$dir/"
+          tar czf "$dir.tar.gz" "$dir"
+          echo "ARCHIVE=$dir.tar.gz" >> "$GITHUB_ENV"
+      - run: gh release upload "$GITHUB_REF_NAME" "$ARCHIVE" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
