@@ -7,6 +7,16 @@ use std::io;
 
 /// Polling rates by rate index (L7 Pro: up to 8000 Hz on the 2.4G dongle and over USB).
 pub const RATES: [u32; 6] = [125, 500, 1000, 2000, 4000, 8000];
+/// Caution shown when picking a high polling rate; `None` below 4000 Hz.
+pub fn rate_warning(hz: u32, usb: bool) -> Option<&'static str> {
+    match (hz, usb) {
+        (8000, false) => Some("8K uses a lot of CPU and drains the battery fastest. Plug the receiver straight into the PC (no hub or front-panel port), and drop the rate if games stutter."),
+        (8000, true) => Some("8K uses a lot of CPU. Use a port straight on the PC (no hub or front-panel port), and drop the rate if games stutter."),
+        (4000, false) => Some("4K uses noticeably more CPU and battery. Drop to 1K or 2K if the cursor or games stutter."),
+        (4000, true) => Some("4K uses noticeably more CPU. Drop to 1K or 2K if the cursor or games stutter."),
+        _ => None,
+    }
+}
 pub const BUTTONS: [&str; 6] = ["Left", "Middle", "Right", "Forward", "Back", "DPI"];
 
 fn u16le(d: &[u8], i: usize) -> u16 {
@@ -381,6 +391,16 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rate_warning_only_for_4k_and_up() {
+        for hz in RATES {
+            for usb in [false, true] {
+                assert_eq!(rate_warning(hz, usb).is_some(), hz >= 4000, "{hz} Hz usb={usb}");
+            }
+        }
+        assert!(!rate_warning(8000, true).unwrap().contains("battery"));
+    }
 
     /// Talks to the real mouse; run with `cargo test -- --ignored`.
     /// Changes several settings in one apply, then restores and checks every byte.

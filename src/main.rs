@@ -408,6 +408,9 @@ fn set(args: &[String]) -> Result<(), String> {
             let hz: u32 = parse_num(a, "rate")?;
             let i = settings::RATES.iter().position(|&r| r == hz).ok_or("rate must be 125, 500, 1000, 2000, 4000 or 8000")?;
             cfg.set_rate(usb, i as u8);
+            if let Some(w) = settings::rate_warning(hz, usb) {
+                eprintln!("L7 Pro: warning: {w}");
+            }
             format!("polling rate ({link}) = {hz} Hz")
         }
         Some("debounce") => {

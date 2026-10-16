@@ -923,6 +923,9 @@ fn performance_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
                 cfg.set_rate(usb, r);
             }
         });
+        if let Some(w) = settings::RATES.get(r as usize).and_then(|&hz| settings::rate_warning(hz, usb)) {
+            ui.label(RichText::new(format!("⚠ {w}")).small().color(WARN));
+        }
         ui.add_space(6.0);
 
         ui.label(RichText::new("Sensor mode").color(WEAK)).on_hover_text(TIP_MODE);
