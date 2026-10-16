@@ -31,6 +31,8 @@ const STAGE_COLORS: [Color32; 6] = [
 ];
 
 const LABEL_W: f32 = 120.0;
+/// Window content width from which the cards go side by side.
+const TWO_COLUMNS: f32 = 860.0;
 
 /// Accent presets offered next to the colour picker.
 const ACCENTS: [([u8; 3], &str); 7] = [
@@ -105,6 +107,27 @@ fn setup_style(ctx: &egui::Context) {
     });
 }
 
+/// egui's fonts have no CJK glyphs, and M HUB names profiles in Chinese, so fall
+/// back to whatever font fontconfig picks for Chinese, if there is one.
+fn add_cjk_fallback(ctx: &egui::Context) {
+    let Ok(out) = std::process::Command::new("fc-match").args(["-f", "%{file}\n%{index}", "sans:lang=zh-cn"]).output()
+    else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let (Some(file), index) = (lines.next(), lines.next().and_then(|i| i.parse().ok()).unwrap_or(0)) else { return };
+    let Ok(bytes) = std::fs::read(file) else { return };
+    let mut fonts = egui::FontDefinitions::default();
+    let mut data = egui::FontData::from_owned(bytes);
+    data.index = index;
+    fonts.font_data.insert("cjk".into(), data.into());
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts.families.entry(family).or_default().push("cjk".into());
+    }
+    ctx.set_fonts(fonts);
+}
+
 struct App {
     info: Option<DeviceInfo>,
     orig: Option<Config>,
@@ -113,6 +136,11 @@ struct App {
     error: bool,
     buttons: ButtonEditor,
     prefs: Prefs,
+    profiles: Vec<String>,
+    /// The new name while a profile is being renamed.
+    renaming: Option<String>,
+    /// The file name while the shown settings are being saved to disk.
+    saving: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -163,6 +191,7 @@ impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
         let prefs = Prefs::load();
         set_accent(&cc.egui_ctx, prefs.accent);
+        add_cjk_fallback(&cc.egui_ctx);
         let mut app = Self {
             info: None,
             orig: None,
@@ -171,6 +200,9 @@ impl App {
             error: false,
             buttons: ButtonEditor::new(),
             prefs,
+            profiles: Vec::new(),
+            renaming: None,
+            saving: None,
         };
         app.reload();
         app
@@ -180,10 +212,12 @@ impl App {
         let result = crate::open_device().and_then(|mut d| {
             let info = settings::device_info(&mut d).map_err(|e| e.to_string())?;
             let cfg = settings::Config::read(&mut d).map_err(|e| e.to_string())?;
-            Ok((info, cfg))
+            let names = settings::profile_names(&mut d).map_err(|e| e.to_string())?;
+            Ok((info, cfg, names))
         });
         match result {
-            Ok((Some(info), Some(cfg))) => {
+            Ok((Some(info), Some(cfg), names)) => {
+                self.profiles = names;
                 self.info = Some(info);
                 self.orig = Some(cfg.clone());
                 self.edit = Some(cfg);
@@ -192,6 +226,154 @@ impl App {
             }
             Ok(_) => self.fail("Mouse is asleep or not connected. Move it and press Refresh."),
             Err(e) => self.fail(&e),
+        }
+    }
+
+    fn profile_label(&self, i: u8) -> String {
+        match self.profiles.get(i as usize) {
+            Some(n) if !n.is_empty() => n.clone(),
+            _ => format!("Profile {}", i + 1),
+        }
+    }
+
+    /// Profile picker and rename. Switching is blocked while there are unsaved edits,
+    /// since the mouse loads the other profile's settings over them.
+    fn profile_card(&mut self, ui: &mut egui::Ui, dirty: bool) {
+        let Some(active) = self.edit.as_ref().map(Config::profile) else { return };
+        let labels: Vec<(u8, String)> = (0..settings::PROFILES).map(|i| (i, self.profile_label(i))).collect();
+        let mut chosen = active;
+        let (mut start, mut save, mut cancel) = (false, false, false);
+        let (mut start_file, mut save_file, mut cancel_file, mut load) = (false, false, false, None);
+        let saved_list = crate::saved::list();
+        let renaming = &mut self.renaming;
+        let saving = &mut self.saving;
+        card(ui, "Profile", |ui| {
+            ui.add_enabled_ui(!dirty, |ui| ui.horizontal(|ui| segmented(ui, &mut chosen, &labels)))
+                .response
+                .on_disabled_hover_text("Apply or revert your changes first");
+            ui.horizontal(|ui| match renaming {
+                Some(name) => {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(name)
+                            .char_limit(settings::NAME_MAX)
+                            .desired_width(ui.available_width() - 150.0),
+                    );
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    save = ui.button("Save").clicked() || enter;
+                    cancel = ui.button("Cancel").clicked();
+                }
+                None => {
+                    ui.label(RichText::new("Changes below are saved to this profile").small().color(WEAK));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        start = ui.button("Rename").clicked();
+                    });
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| match saving {
+                Some(name) => {
+                    let field = ui.add(egui::TextEdit::singleline(name).hint_text("File name").desired_width(ui.available_width() - 150.0));
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    save_file = ui.button("Save").clicked() || enter;
+                    cancel_file = ui.button("Cancel").clicked();
+                }
+                None => {
+                    start_file = ui.button("Save to file").on_hover_text("Saves the settings shown below").clicked();
+                    egui::ComboBox::from_id_salt("load_saved")
+                        .selected_text("Load from file")
+                        // leave room for Open folder in a narrow window
+                        .width((ui.available_width() - 120.0).clamp(90.0, 150.0))
+                        .show_ui(ui, |ui| {
+                            if saved_list.is_empty() {
+                                ui.label(RichText::new("Nothing saved yet").color(WEAK));
+                            }
+                            for s in &saved_list {
+                                if ui.selectable_label(false, &s.name).clicked() {
+                                    load = Some((s.name.clone(), s.path.clone()));
+                                }
+                            }
+                        });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Open folder").clicked() {
+                            let _ = std::fs::create_dir_all(crate::saved::dir());
+                            let _ = std::process::Command::new("xdg-open").arg(crate::saved::dir()).spawn().map(|mut c| {
+                                std::thread::spawn(move || c.wait());
+                            });
+                        }
+                    });
+                }
+            });
+        });
+        if start_file {
+            self.saving = Some(labels[active as usize].1.clone());
+        }
+        if cancel_file {
+            self.saving = None;
+        }
+        if save_file {
+            let name = self.saving.take().unwrap_or_default();
+            match self.edit.as_ref().map(|c| crate::saved::save(&name, c)) {
+                Some(Ok(_)) => {
+                    self.message = format!("Saved \"{}\"", name.trim());
+                    self.error = false;
+                }
+                Some(Err(e)) => {
+                    self.saving = Some(name);
+                    self.fail(&format!("Save failed: {e}"));
+                }
+                None => {}
+            }
+        }
+        if let Some((name, path)) = load {
+            self.load_saved(&name, &path);
+        }
+        if start {
+            self.renaming = Some(labels[active as usize].1.clone());
+        }
+        if cancel {
+            self.renaming = None;
+        }
+        if save {
+            let name = self.renaming.take().unwrap_or_default();
+            match crate::open_device().and_then(|mut d| settings::rename_profile(&mut d, active, &name)) {
+                Ok(()) => {
+                    self.profiles[active as usize] = name.trim().to_string();
+                    self.message = "Profile renamed".into();
+                    self.error = false;
+                }
+                Err(e) => {
+                    self.renaming = Some(name);
+                    self.fail(&format!("Rename failed: {e}"));
+                }
+            }
+        }
+        if chosen != active {
+            self.renaming = None;
+            match crate::open_device().and_then(|mut d| settings::switch_profile(&mut d, chosen)) {
+                Ok(()) => {
+                    self.reload();
+                    self.message = format!("Switched to {}", labels[chosen as usize].1);
+                }
+                Err(e) => self.fail(&format!("Switch failed: {e}")),
+            }
+        }
+    }
+
+    /// Puts a saved profile's settings into the editor; Apply writes them to the
+    /// active profile like any other edit.
+    fn load_saved(&mut self, name: &str, path: &std::path::Path) {
+        let Some(orig) = &self.orig else { return };
+        match crate::saved::load(path) {
+            Ok(mut cfg) => {
+                cfg.0[0] = orig.0[0]; // stays on the active profile
+                if !cfg.left_button_default() {
+                    return self.fail("That file has the left button remapped; refusing to load it");
+                }
+                self.edit = Some(cfg);
+                self.message = format!("Loaded \"{name}\". Press Apply to write it to the mouse");
+                self.error = false;
+            }
+            Err(e) => self.fail(&format!("Load failed: {e}")),
         }
     }
 
@@ -237,6 +419,7 @@ fn card_with<T>(
     header: impl FnOnce(&mut egui::Ui, &mut T),
     body: impl FnOnce(&mut egui::Ui, &mut T),
 ) {
+    let collapsed = is_collapsed(title);
     egui::Frame::new()
         .fill(CARD)
         .stroke(stroke(1.0, CARD_STROKE))
@@ -245,24 +428,96 @@ fn card_with<T>(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new(title).size(16.0).strong());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| header(ui, state));
+                let font = egui::FontId::proportional(16.0);
+                let galley = ui.painter().layout_no_wrap(title.into(), font, TEXT);
+                let size = Vec2::new(galley.size().x + 22.0, galley.size().y.max(26.0));
+                let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+                let p = ui.painter();
+                // the default font has no ▸/▾, so draw the chevron
+                let c = rect.left_center() + Vec2::new(5.0, 0.0);
+                let color = if resp.hovered() { TEXT } else { WEAK };
+                let chevron = if collapsed {
+                    vec![c + Vec2::new(-3.0, -5.0), c + Vec2::new(4.0, 0.0), c + Vec2::new(-3.0, 5.0)]
+                } else {
+                    vec![c + Vec2::new(-5.0, -3.0), c + Vec2::new(5.0, -3.0), c + Vec2::new(0.0, 4.0)]
+                };
+                p.add(egui::Shape::convex_polygon(chevron, color, Stroke::NONE));
+                p.galley(rect.left_center() + Vec2::new(18.0, -galley.size().y / 2.0), galley, TEXT);
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    set_collapsed(title, !collapsed);
+                }
+                if !collapsed {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| header(ui, state));
+                }
             });
-            ui.add_space(4.0);
-            body(ui, state);
+            if !collapsed {
+                ui.add_space(4.0);
+                body(ui, state);
+            }
         });
     ui.add_space(12.0);
 }
 
+/// Titles of the cards folded away, kept in `$XDG_CONFIG_HOME/openl7/collapsed`.
+static COLLAPSED: std::sync::Mutex<Option<Vec<String>>> = std::sync::Mutex::new(None);
+
+fn collapsed_path() -> std::path::PathBuf {
+    crate::prefs::config_dir().join("collapsed")
+}
+
+fn is_collapsed(title: &str) -> bool {
+    let mut c = COLLAPSED.lock().unwrap_or_else(|e| e.into_inner());
+    let list = c.get_or_insert_with(|| {
+        std::fs::read_to_string(collapsed_path()).unwrap_or_default().lines().map(str::to_string).collect()
+    });
+    list.iter().any(|t| t == title)
+}
+
+fn set_collapsed(title: &str, on: bool) {
+    let mut c = COLLAPSED.lock().unwrap_or_else(|e| e.into_inner());
+    let list = c.get_or_insert_with(Vec::new);
+    list.retain(|t| t != title);
+    if on {
+        list.push(title.to_string());
+    }
+    let _ = std::fs::create_dir_all(crate::prefs::config_dir());
+    let _ = std::fs::write(collapsed_path(), list.join("\n"));
+}
+
 /// Label on the left, control filling the rest of the row.
 fn row(ui: &mut egui::Ui, label: &str, control: impl FnOnce(&mut egui::Ui)) {
+    row_tip(ui, label, None, control);
+}
+
+/// A row whose label explains the setting on hover.
+fn row_tip(ui: &mut egui::Ui, label: &str, tip: Option<&str>, control: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         // fixed-width label column so every control starts at the same x
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(LABEL_W, 28.0), Sense::hover());
-        ui.painter().text(rect.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), WEAK);
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(LABEL_W, 28.0), Sense::hover());
+        let color = if tip.is_some() && resp.hovered() { TEXT } else { WEAK };
+        ui.painter().text(rect.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.0), color);
+        if let Some(tip) = tip {
+            resp.on_hover_text(tip);
+        }
         control(ui);
     });
 }
+
+const TIP_RATE: &str = "How often the mouse reports to the PC. Higher feels smoother and responds sooner, but uses more battery and some CPU.";
+const TIP_MODE: &str = "How hard the sensor works. Gaming and Extreme cut latency further at the cost of battery life.";
+/// Per sensor mode, in `settings::SENSOR_MODES` order (from M HUB's descriptions).
+const TIP_MODES: [&str; 3] = [
+    "Everyday use and casual games: steady response and the best battery life.",
+    "Fast-paced games: the sensor and controller respond quicker, for a little less battery life.",
+    "Competitive matches: the sensor runs at full speed (20K+ frame rate) for the sharpest response. Noticeably shorter battery life.",
+];
+const TIP_LOD: &str = "How high you can lift the mouse before it stops tracking. 1 mm suits players who lift and reposition often.";
+const TIP_RIPPLE: &str = "Smooths out sensor jitter at high DPI, at the cost of a little delay.";
+const TIP_ANGLE_SNAP: &str = "Straightens slightly wobbly movements into straight lines. Usually left off for gaming.";
+const TIP_MOTION_SYNC: &str = "Lines up sensor reads with the polling rate for more even motion, adding a tiny delay.";
+const TIP_ANGLE: &str = "Rotates tracking to match how you hold the mouse, so a straight swipe comes out straight.";
+const TIP_DEBOUNCE: &str = "How long a click must settle before it counts. Lower is faster; raise it if a button double-clicks on its own.";
+const TIP_SLEEP: &str = "Idle time before the mouse sleeps to save battery.";
 
 fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     let size = Vec2::new(40.0, 22.0);
@@ -285,15 +540,24 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
 
 /// Row of equal-width buttons; returns true if the selection changed.
 fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options: &[(T, String)]) -> bool {
+    segmented_tips(ui, value, options, &[])
+}
+
+/// `segmented` with a hover explanation per option (same order as `options`).
+fn segmented_tips<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options: &[(T, String)], tips: &[&str]) -> bool {
     let mut changed = false;
     let gap = 4.0;
     let w = ((ui.available_width() - gap * (options.len() as f32 - 1.0)) / options.len() as f32).max(36.0);
     ui.spacing_mut().item_spacing.x = gap;
-    for (v, label) in options {
+    for (i, (v, label)) in options.iter().enumerate() {
         let selected = *value == *v;
         let text = RichText::new(label).color(if selected { Color32::WHITE } else { TEXT });
         let btn = egui::Button::new(text).fill(if selected { accent() } else { WIDGET }).min_size(Vec2::new(w, 28.0));
-        if ui.add(btn).clicked() && !selected {
+        let mut resp = ui.add(btn);
+        if let Some(tip) = tips.get(i) {
+            resp = resp.on_hover_text(*tip);
+        }
+        if resp.clicked() && !selected {
             *value = *v;
             changed = true;
         }
@@ -585,18 +849,138 @@ fn appearance(ui: &mut egui::Ui, prefs: &mut Prefs) {
         });
     });
     if *prefs != before {
-        // merge into the file, since the tray menu can change the percentage toggle too
-        let mut saved = Prefs::load();
         if prefs.accent != before.accent {
             set_accent(ui.ctx(), prefs.accent);
-            saved.accent = prefs.accent;
         }
-        if prefs.tray_percent != before.tray_percent {
-            saved.tray_percent = prefs.tray_percent;
-        }
-        let _ = saved.save();
-        *prefs = saved;
+        let _ = prefs.save();
     }
+}
+
+fn buttons_card(ui: &mut egui::Ui, cfg: &mut Config, ed: &mut ButtonEditor) {
+    card(ui, "Buttons", |ui| {
+        row(ui, settings::BUTTONS[0], |ui| {
+            ui.label(RichText::new("Left click (fixed)").color(WEAK));
+        });
+        for i in 1..5 {
+            let mut action = cfg.button(i);
+            let open = ed.open == Some(i);
+            row(ui, settings::BUTTONS[i], |ui| {
+                if action_header(ui, action, open).clicked() {
+                    ed.toggle(i, action);
+                }
+            });
+            if ed.open == Some(i) {
+                action_editor(ui, ed, &mut action);
+                ui.add_space(4.0);
+            }
+            if action != cfg.button(i) {
+                cfg.set_button(i, action);
+            }
+        }
+        row(ui, settings::BUTTONS[5], |ui| {
+            ui.label(RichText::new("DPI cycle (fixed)").color(WEAK));
+        });
+    });
+}
+
+fn dpi_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
+    card_with(
+        ui,
+        "DPI",
+        cfg,
+        |ui, cfg| {
+            let n = cfg.stages();
+            if ui.add_enabled(n < 6, egui::Button::new("+").min_size(Vec2::splat(26.0))).clicked() {
+                cfg.set_stages(n + 1);
+            }
+            ui.label(format!("{n} stages"));
+            if ui.add_enabled(n > 1, egui::Button::new("−").min_size(Vec2::splat(26.0))).clicked() {
+                cfg.set_stages(n - 1);
+                if cfg.active_stage(usb) as usize >= n - 1 {
+                    cfg.set_active_stage(n as u8 - 2);
+                }
+            }
+        },
+        |ui, cfg| {
+            dpi_tiles(ui, cfg, usb);
+            ui.label(RichText::new("Click a stage to make it active · drag or click the number to edit").small().color(WEAK));
+        },
+    );
+}
+
+fn performance_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
+    card(ui, "Performance", |ui| {
+        let link = if usb { "USB" } else { "2.4G" };
+        ui.label(RichText::new(format!("Polling rate ({link})")).color(WEAK)).on_hover_text(TIP_RATE);
+        let mut r = cfg.rate(usb);
+        let opts: Vec<(u8, String)> = settings::RATES
+            .iter()
+            .enumerate()
+            .map(|(i, hz)| (i as u8, if *hz >= 1000 { format!("{}K", hz / 1000) } else { hz.to_string() }))
+            .collect();
+        ui.horizontal(|ui| {
+            if segmented(ui, &mut r, &opts) {
+                cfg.set_rate(usb, r);
+            }
+        });
+        ui.add_space(6.0);
+
+        ui.label(RichText::new("Sensor mode").color(WEAK)).on_hover_text(TIP_MODE);
+        let mut m = cfg.sensor_mode();
+        let modes: Vec<(u8, String)> =
+            settings::SENSOR_MODES.iter().enumerate().map(|(i, n)| (i as u8, n.to_string())).collect();
+        ui.horizontal(|ui| {
+            if segmented_tips(ui, &mut m, &modes, &TIP_MODES) {
+                cfg.set_sensor_mode(m);
+            }
+        });
+        ui.add_space(6.0);
+
+        row_tip(ui, "Lift-off distance", Some(TIP_LOD), |ui| {
+            let mut lod = cfg.lod();
+            if segmented(ui, &mut lod, &[(1, "1 mm".into()), (2, "2 mm".into())]) {
+                cfg.set_lod(lod);
+            }
+        });
+        for (bit, name, tip) in [
+            (0x04, "Ripple control", TIP_RIPPLE),
+            (0x08, "Angle snapping", TIP_ANGLE_SNAP),
+            (0x10, "Motion sync", TIP_MOTION_SYNC),
+        ] {
+            row_tip(ui, name, Some(tip), |ui| {
+                let mut on = cfg.flag(bit);
+                if toggle(ui, &mut on).changed() {
+                    cfg.set_flag(bit, on);
+                }
+            });
+        }
+
+        ui.add_space(4.0);
+        let slider_w = |ui: &mut egui::Ui| ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0);
+        row_tip(ui, "Sensor angle", Some(TIP_ANGLE), |ui| {
+            slider_w(ui);
+            let mut a = cfg.angle();
+            if ui.add(egui::Slider::new(&mut a, -settings::ANGLE_MAX..=settings::ANGLE_MAX).suffix("°")).changed() {
+                cfg.set_angle(a);
+            }
+        });
+        row_tip(ui, "Button debounce", Some(TIP_DEBOUNCE), |ui| {
+            slider_w(ui);
+            let mut d = cfg.debounce();
+            if ui.add(egui::Slider::new(&mut d, 0..=settings::DEBOUNCE_MAX).suffix(" ms")).changed() {
+                cfg.set_debounce(d);
+            }
+        });
+        row_tip(ui, "Sleep after", Some(TIP_SLEEP), |ui| {
+            slider_w(ui);
+            let mut s = cfg.sleep();
+            let slider = egui::Slider::new(&mut s, 0..=settings::SLEEP_MAX)
+                .custom_formatter(|v, _| if v == 0.0 { "never".into() } else { format!("{v} min") });
+            if ui.add(slider).changed() {
+                cfg.set_sleep(s);
+            }
+        });
+    });
 }
 
 impl eframe::App for App {
@@ -657,6 +1041,8 @@ impl eframe::App for App {
                 });
                 ui.add_space(14.0);
 
+                self.profile_card(ui, dirty);
+
                 let usb = self.info.as_ref().is_some_and(|i| i.wired);
                 let Some(cfg) = self.edit.as_mut() else {
                     card(ui, "Not connected", |ui| {
@@ -666,124 +1052,20 @@ impl eframe::App for App {
                     return;
                 };
 
-                let ed = &mut self.buttons;
-                card(ui, "Buttons", |ui| {
-                    row(ui, settings::BUTTONS[0], |ui| {
-                        ui.label(RichText::new("Left click (fixed)").color(WEAK));
+                if ui.available_width() >= TWO_COLUMNS {
+                    ui.columns(2, |cols| {
+                        let [left, right] = cols else { return };
+                        buttons_card(left, cfg, &mut self.buttons);
+                        appearance(left, &mut self.prefs);
+                        dpi_card(right, cfg, usb);
+                        performance_card(right, cfg, usb);
                     });
-                    for i in 1..5 {
-                        let mut action = cfg.button(i);
-                        let open = ed.open == Some(i);
-                        row(ui, settings::BUTTONS[i], |ui| {
-                            if action_header(ui, action, open).clicked() {
-                                ed.toggle(i, action);
-                            }
-                        });
-                        if ed.open == Some(i) {
-                            action_editor(ui, ed, &mut action);
-                            ui.add_space(4.0);
-                        }
-                        if action != cfg.button(i) {
-                            cfg.set_button(i, action);
-                        }
-                    }
-                    row(ui, settings::BUTTONS[5], |ui| {
-                        ui.label(RichText::new("DPI cycle (fixed)").color(WEAK));
-                    });
-                });
-                card_with(
-                    ui,
-                    "DPI",
-                    cfg,
-                    |ui, cfg| {
-                        let n = cfg.stages();
-                        if ui.add_enabled(n < 6, egui::Button::new("+").min_size(Vec2::splat(26.0))).clicked() {
-                            cfg.set_stages(n + 1);
-                        }
-                        ui.label(format!("{n} stages"));
-                        if ui.add_enabled(n > 1, egui::Button::new("−").min_size(Vec2::splat(26.0))).clicked() {
-                            cfg.set_stages(n - 1);
-                            if cfg.active_stage(usb) as usize >= n - 1 {
-                                cfg.set_active_stage(n as u8 - 2);
-                            }
-                        }
-                    },
-                    |ui, cfg| {
-                        dpi_tiles(ui, cfg, usb);
-                        ui.label(RichText::new("Click a stage to make it active · drag or click the number to edit").small().color(WEAK));
-                    },
-                );
-
-                card(ui, "Performance", |ui| {
-                    let link = if usb { "USB" } else { "2.4G" };
-                    ui.label(RichText::new(format!("Polling rate ({link})")).color(WEAK));
-                    let mut r = cfg.rate(usb);
-                    let opts: Vec<(u8, String)> = settings::RATES
-                        .iter()
-                        .enumerate()
-                        .map(|(i, hz)| (i as u8, if *hz >= 1000 { format!("{}K", hz / 1000) } else { hz.to_string() }))
-                        .collect();
-                    ui.horizontal(|ui| {
-                        if segmented(ui, &mut r, &opts) {
-                            cfg.set_rate(usb, r);
-                        }
-                    });
-                    ui.add_space(6.0);
-
-                    ui.label(RichText::new("Sensor mode").color(WEAK));
-                    let mut m = cfg.sensor_mode();
-                    let modes: Vec<(u8, String)> =
-                        settings::SENSOR_MODES.iter().enumerate().map(|(i, n)| (i as u8, n.to_string())).collect();
-                    ui.horizontal(|ui| {
-                        if segmented(ui, &mut m, &modes) {
-                            cfg.set_sensor_mode(m);
-                        }
-                    });
-                    ui.add_space(6.0);
-
-                    row(ui, "Lift-off distance", |ui| {
-                        let mut lod = cfg.lod();
-                        if segmented(ui, &mut lod, &[(1, "1 mm".into()), (2, "2 mm".into())]) {
-                            cfg.set_lod(lod);
-                        }
-                    });
-                    for (bit, name) in [(0x04, "Ripple control"), (0x08, "Angle snapping"), (0x10, "Motion sync")] {
-                        row(ui, name, |ui| {
-                            let mut on = cfg.flag(bit);
-                            if toggle(ui, &mut on).changed() {
-                                cfg.set_flag(bit, on);
-                            }
-                        });
-                    }
-
-                    ui.add_space(4.0);
-                    let slider_w = |ui: &mut egui::Ui| ui.spacing_mut().slider_width = (ui.available_width() - 70.0).max(80.0);
-                    row(ui, "Sensor angle", |ui| {
-                        slider_w(ui);
-                        let mut a = cfg.angle();
-                        if ui.add(egui::Slider::new(&mut a, -settings::ANGLE_MAX..=settings::ANGLE_MAX).suffix("°")).changed() {
-                            cfg.set_angle(a);
-                        }
-                    });
-                    row(ui, "Button debounce", |ui| {
-                        slider_w(ui);
-                        let mut d = cfg.debounce();
-                        if ui.add(egui::Slider::new(&mut d, 0..=settings::DEBOUNCE_MAX).suffix(" ms")).changed() {
-                            cfg.set_debounce(d);
-                        }
-                    });
-                    row(ui, "Sleep after", |ui| {
-                        slider_w(ui);
-                        let mut s = cfg.sleep();
-                        let slider = egui::Slider::new(&mut s, 0..=settings::SLEEP_MAX)
-                            .custom_formatter(|v, _| if v == 0.0 { "never".into() } else { format!("{v} min") });
-                        if ui.add(slider).changed() {
-                            cfg.set_sleep(s);
-                        }
-                    });
-                });
-
-                appearance(ui, &mut self.prefs);
+                } else {
+                    buttons_card(ui, cfg, &mut self.buttons);
+                    dpi_card(ui, cfg, usb);
+                    performance_card(ui, cfg, usb);
+                    appearance(ui, &mut self.prefs);
+                }
 
                 ui.vertical_centered(|ui| {
                     ui.label(
