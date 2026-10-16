@@ -26,25 +26,38 @@ mouse directly over hidraw, with no web driver needed.
 The protocol was worked out from the vendor's M HUB WebHID driver. Every write is read back
 and verified.
 
-## Build & install
+## Install
+
+**From a release** (x86_64): download `openl7-…-x86_64-linux.tar.gz` from
+[Releases](https://github.com/STRIKERnz/OpenL7/releases), then:
 
 ```sh
-cargo build --release
-cp target/release/openl7 ~/.local/bin/
+tar xzf openl7-*-x86_64-linux.tar.gz
+cd openl7-*-x86_64-linux
+./install.sh
 ```
 
-Run `openl7` for the tray icon, or `openl7 gui` for the settings window.
+**From source:** install Rust with [rustup](https://rustup.rs), then:
 
-Your user needs read/write access to the mouse's hidraw device, for example with a udev rule:
+```sh
+git clone https://github.com/STRIKERnz/OpenL7
+cd OpenL7
+./install.sh
+```
 
-```
-KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="5253", TAG+="uaccess"
-```
+`install.sh` puts `openl7` in `~/.local/bin`, adds OpenL7 to your app menu, starts the tray
+icon at login, and asks for sudo once to install a udev rule
+(`/etc/udev/rules.d/70-openl7.rules`) that lets your user talk to the mouse without root.
+Run it again to update; `./install.sh --uninstall` removes everything except your settings
+in `~/.config/openl7`.
+
+If commands say `no permission` after installing, unplug the receiver (or cable) and plug
+it back in so the udev rule applies.
+
 ## Hardware test
 
 `cargo test --release -- --ignored` changes several settings on a connected mouse, then
 restores them and checks every byte.
-
 
 ## Command line
 

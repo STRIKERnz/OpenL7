@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=OpenL7
+Comment=Settings for the MCHOSE L7 Pro mouse
+Exec=@BIN@ gui
+Icon=input-mouse
+Categories=Settings;HardwareSettings;
+StartupWMClass=openl7
