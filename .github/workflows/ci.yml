@@ -1,0 +1,14 @@
+# Tests every pull request. `anvil land` waits for a check once the repo has any
+# workflow, so this must keep running on pull_request or lands hang.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4.2.2
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --release --locked
