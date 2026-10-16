@@ -519,7 +519,7 @@ impl eframe::App for App {
                 });
                 ui.vertical_centered(|ui| {
                     ui.label(
-                        RichText::new("openl7 is unofficial and not affiliated with MCHOSE. Use at your own risk.")
+                        RichText::new("OpenL7 is unofficial and not affiliated with MCHOSE. Use at your own risk.")
                             .small()
                             .color(WEAK),
                     );
@@ -561,14 +561,14 @@ pub fn run() -> Result<(), String> {
     let Some((_lock, sock)) = single_instance() else { return Ok(()) };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("L7 Pro Settings")
+            .with_title("OpenL7")
             .with_app_id("openl7")
             .with_inner_size([480.0, 860.0])
             .with_min_inner_size([420.0, 480.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "L7 Pro Settings",
+        "OpenL7",
         options,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
