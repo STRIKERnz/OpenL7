@@ -505,6 +505,12 @@ fn row_tip(ui: &mut egui::Ui, label: &str, tip: Option<&str>, control: impl FnOn
 
 const TIP_RATE: &str = "How often the mouse reports to the PC. Higher feels smoother and responds sooner, but uses more battery and some CPU.";
 const TIP_MODE: &str = "How hard the sensor works. Gaming and Extreme cut latency further at the cost of battery life.";
+/// Per sensor mode, in `settings::SENSOR_MODES` order (from M HUB's descriptions).
+const TIP_MODES: [&str; 3] = [
+    "Everyday use and casual games: steady response and the best battery life.",
+    "Fast-paced games: the sensor and controller respond quicker, for a little less battery life.",
+    "Competitive matches: the sensor runs at full speed (20K+ frame rate) for the sharpest response. Noticeably shorter battery life.",
+];
 const TIP_LOD: &str = "How high you can lift the mouse before it stops tracking. 1 mm suits players who lift and reposition often.";
 const TIP_RIPPLE: &str = "Smooths out sensor jitter at high DPI, at the cost of a little delay.";
 const TIP_ANGLE_SNAP: &str = "Straightens slightly wobbly movements into straight lines. Usually left off for gaming.";
@@ -534,15 +540,24 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
 
 /// Row of equal-width buttons; returns true if the selection changed.
 fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options: &[(T, String)]) -> bool {
+    segmented_tips(ui, value, options, &[])
+}
+
+/// `segmented` with a hover explanation per option (same order as `options`).
+fn segmented_tips<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options: &[(T, String)], tips: &[&str]) -> bool {
     let mut changed = false;
     let gap = 4.0;
     let w = ((ui.available_width() - gap * (options.len() as f32 - 1.0)) / options.len() as f32).max(36.0);
     ui.spacing_mut().item_spacing.x = gap;
-    for (v, label) in options {
+    for (i, (v, label)) in options.iter().enumerate() {
         let selected = *value == *v;
         let text = RichText::new(label).color(if selected { Color32::WHITE } else { TEXT });
         let btn = egui::Button::new(text).fill(if selected { accent() } else { WIDGET }).min_size(Vec2::new(w, 28.0));
-        if ui.add(btn).clicked() && !selected {
+        let mut resp = ui.add(btn);
+        if let Some(tip) = tips.get(i) {
+            resp = resp.on_hover_text(*tip);
+        }
+        if resp.clicked() && !selected {
             *value = *v;
             changed = true;
         }
@@ -915,7 +930,7 @@ fn performance_card(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
         let modes: Vec<(u8, String)> =
             settings::SENSOR_MODES.iter().enumerate().map(|(i, n)| (i as u8, n.to_string())).collect();
         ui.horizontal(|ui| {
-            if segmented(ui, &mut m, &modes) {
+            if segmented_tips(ui, &mut m, &modes, &TIP_MODES) {
                 cfg.set_sensor_mode(m);
             }
         });
