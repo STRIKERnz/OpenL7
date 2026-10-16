@@ -2,6 +2,7 @@
 //! the same commands M HUB uses and verified by reading back.
 
 use crate::buttons::{self, Action};
+use crate::prefs::Prefs;
 use crate::settings::{self, Config, DeviceInfo};
 use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, Sense, Stroke, StrokeKind, Vec2};
 
@@ -14,7 +15,6 @@ const WIDGET_HOVER: Color32 = Color32::from_rgb(0x34, 0x3b, 0x49);
 const WIDGET_ACTIVE: Color32 = Color32::from_rgb(0x3d, 0x45, 0x55);
 const TEXT: Color32 = Color32::from_rgb(0xe6, 0xe8, 0xee);
 const WEAK: Color32 = Color32::from_rgb(0x8b, 0x93, 0xa5);
-const ACCENT: Color32 = Color32::from_rgb(0x5b, 0x8c, 0xff);
 const GOOD: Color32 = Color32::from_rgb(0x4c, 0xc3, 0x8a);
 const WARN: Color32 = Color32::from_rgb(0xf0, 0xb4, 0x4c);
 const BAD: Color32 = Color32::from_rgb(0xef, 0x5f, 0x5f);
@@ -31,6 +31,30 @@ const STAGE_COLORS: [Color32; 6] = [
 ];
 
 const LABEL_W: f32 = 120.0;
+
+/// Accent presets offered next to the colour picker.
+const ACCENTS: [([u8; 3], &str); 7] = [
+    ([0x5b, 0x8c, 0xff], "Blue"),
+    ([0x78, 0x3e, 0xcd], "Purple"),
+    ([0xe0, 0x5f, 0xb0], "Pink"),
+    ([0xef, 0x5f, 0x5f], "Red"),
+    ([0xf0, 0x8a, 0x3c], "Orange"),
+    ([0x3f, 0xb8, 0x7a], "Green"),
+    ([0x1f, 0xb8, 0xc8], "Cyan"),
+];
+
+/// The user's accent colour; set from the prefs file, read while painting.
+static ACCENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x5b8cff);
+
+fn accent() -> Color32 {
+    let v = ACCENT.load(std::sync::atomic::Ordering::Relaxed);
+    Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+fn set_accent(ctx: &egui::Context, [r, g, b]: [u8; 3]) {
+    ACCENT.store(u32::from_be_bytes([0, r, g, b]), std::sync::atomic::Ordering::Relaxed);
+    setup_style(ctx);
+}
 
 fn setup_style(ctx: &egui::Context) {
     ctx.set_theme(egui::ThemePreference::Dark);
@@ -55,7 +79,7 @@ fn setup_style(ctx: &egui::Context) {
         v.window_fill = CARD;
         v.extreme_bg_color = Color32::from_rgb(0x10, 0x12, 0x16);
         v.override_text_color = Some(TEXT);
-        v.selection.bg_fill = ACCENT;
+        v.selection.bg_fill = accent();
         v.selection.stroke = stroke(1.0, Color32::WHITE);
         v.slider_trailing_fill = true;
         v.window_corner_radius = CornerRadius::same(10);
@@ -88,6 +112,7 @@ struct App {
     message: String,
     error: bool,
     buttons: ButtonEditor,
+    prefs: Prefs,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -136,8 +161,17 @@ impl ButtonEditor {
 
 impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
-        setup_style(&cc.egui_ctx);
-        let mut app = Self { info: None, orig: None, edit: None, message: String::new(), error: false, buttons: ButtonEditor::new() };
+        let prefs = Prefs::load();
+        set_accent(&cc.egui_ctx, prefs.accent);
+        let mut app = Self {
+            info: None,
+            orig: None,
+            edit: None,
+            message: String::new(),
+            error: false,
+            buttons: ButtonEditor::new(),
+            prefs,
+        };
         app.reload();
         app
     }
@@ -240,7 +274,7 @@ fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
     if ui.is_rect_visible(rect) {
         let t = ui.ctx().animate_bool_responsive(resp.id, *on);
         let off = if resp.hovered() { WIDGET_HOVER } else { WIDGET };
-        let fill = egui::ecolor::tint_color_towards(off, ACCENT).lerp_to_gamma(ACCENT, t);
+        let fill = egui::ecolor::tint_color_towards(off, accent()).lerp_to_gamma(accent(), t);
         let radius = rect.height() / 2.0;
         ui.painter().rect_filled(rect, radius, if *on || t > 0.0 { fill } else { off });
         let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
@@ -258,7 +292,7 @@ fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options: &[(
     for (v, label) in options {
         let selected = *value == *v;
         let text = RichText::new(label).color(if selected { Color32::WHITE } else { TEXT });
-        let btn = egui::Button::new(text).fill(if selected { ACCENT } else { WIDGET }).min_size(Vec2::new(w, 28.0));
+        let btn = egui::Button::new(text).fill(if selected { accent() } else { WIDGET }).min_size(Vec2::new(w, 28.0));
         if ui.add(btn).clicked() && !selected {
             *value = *v;
             changed = true;
@@ -272,7 +306,7 @@ fn battery_icon(ui: &mut egui::Ui, level: u8, charging: bool) {
     let body = egui::Rect::from_min_size(rect.min, Vec2::new(26.0, 16.0));
     let nub = egui::Rect::from_min_size(egui::pos2(body.right() + 1.0, rect.center().y - 3.5), Vec2::new(3.0, 7.0));
     let color = if charging {
-        ACCENT
+        accent()
     } else if level <= 15 {
         BAD
     } else if level <= 30 {
@@ -290,7 +324,7 @@ fn battery_icon(ui: &mut egui::Ui, level: u8, charging: bool) {
 
 fn chip(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
     let label = RichText::new(text).color(if selected { Color32::WHITE } else { TEXT });
-    ui.add(egui::Button::new(label).fill(if selected { ACCENT } else { WIDGET }).min_size(Vec2::new(0.0, 26.0)))
+    ui.add(egui::Button::new(label).fill(if selected { accent() } else { WIDGET }).min_size(Vec2::new(0.0, 26.0)))
 }
 
 fn chip_group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
@@ -306,7 +340,7 @@ fn chip_group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) 
 fn action_header(ui: &mut egui::Ui, action: Action, open: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
     let fill = if resp.hovered() { WIDGET_HOVER } else { WIDGET };
-    let border = if open { stroke(1.5, ACCENT) } else { Stroke::NONE };
+    let border = if open { stroke(1.5, accent()) } else { Stroke::NONE };
     let p = ui.painter();
     p.rect(rect, 6.0, fill, border, StrokeKind::Inside);
     p.text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, action.label(), egui::FontId::proportional(14.0), TEXT);
@@ -526,6 +560,45 @@ fn dpi_tiles(ui: &mut egui::Ui, cfg: &mut Config, usb: bool) {
 
 // ---------------------------------------------------------------- window
 
+/// App preferences, saved as soon as they change (they aren't mouse settings, so no Apply).
+fn appearance(ui: &mut egui::Ui, prefs: &mut Prefs) {
+    let before = *prefs;
+    card(ui, "Appearance", |ui| {
+        row(ui, "Accent colour", |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            for (rgb, name) in ACCENTS {
+                let (rect, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
+                let c = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                ui.painter().circle_filled(rect.center(), 10.0, c);
+                if prefs.accent == rgb {
+                    ui.painter().circle_stroke(rect.center(), 10.0, stroke(2.0, Color32::WHITE));
+                }
+                if resp.on_hover_text(name).clicked() {
+                    prefs.accent = rgb;
+                }
+            }
+            ui.add_space(4.0);
+            egui::color_picker::color_edit_button_srgb(ui, &mut prefs.accent).on_hover_text("Custom colour");
+        });
+        row(ui, "Tray percentage", |ui| {
+            toggle(ui, &mut prefs.tray_percent).on_hover_text("Show the battery level as a number on the tray icon");
+        });
+    });
+    if *prefs != before {
+        // merge into the file, since the tray menu can change the percentage toggle too
+        let mut saved = Prefs::load();
+        if prefs.accent != before.accent {
+            set_accent(ui.ctx(), prefs.accent);
+            saved.accent = prefs.accent;
+        }
+        if prefs.tray_percent != before.tray_percent {
+            saved.tray_percent = prefs.tray_percent;
+        }
+        let _ = saved.save();
+        *prefs = saved;
+    }
+}
+
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let dirty = self.edit.is_some() && self.edit != self.orig;
@@ -544,7 +617,7 @@ impl eframe::App for App {
                     ui.label(RichText::new(text).color(color));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let apply = egui::Button::new(RichText::new("Apply").color(Color32::WHITE).strong())
-                            .fill(if dirty { ACCENT } else { WIDGET })
+                            .fill(if dirty { accent() } else { WIDGET })
                             .min_size(Vec2::new(90.0, 32.0));
                         if ui.add_enabled(dirty, apply).clicked() {
                             self.apply();
@@ -589,6 +662,7 @@ impl eframe::App for App {
                     card(ui, "Not connected", |ui| {
                         ui.label(RichText::new(&self.message).color(WEAK));
                     });
+                    appearance(ui, &mut self.prefs);
                     return;
                 };
 
@@ -708,6 +782,8 @@ impl eframe::App for App {
                         }
                     });
                 });
+
+                appearance(ui, &mut self.prefs);
 
                 ui.vertical_centered(|ui| {
                     ui.label(
