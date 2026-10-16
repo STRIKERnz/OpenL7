@@ -17,11 +17,16 @@ impl Default for Prefs {
     }
 }
 
-fn path() -> PathBuf {
+/// `$XDG_CONFIG_HOME/openl7`.
+pub fn config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-    base.join("openl7/prefs")
+    base.join("openl7")
+}
+
+fn path() -> PathBuf {
+    config_dir().join("prefs")
 }
 
 /// Modification time, so the tray can notice the settings window changing a pref.

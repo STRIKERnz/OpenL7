@@ -137,6 +137,8 @@ struct App {
     profiles: Vec<String>,
     /// The new name while a profile is being renamed.
     renaming: Option<String>,
+    /// The file name while the shown settings are being saved to disk.
+    saving: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -198,6 +200,7 @@ impl App {
             prefs,
             profiles: Vec::new(),
             renaming: None,
+            saving: None,
         };
         app.reload();
         app
@@ -238,7 +241,10 @@ impl App {
         let labels: Vec<(u8, String)> = (0..settings::PROFILES).map(|i| (i, self.profile_label(i))).collect();
         let mut chosen = active;
         let (mut start, mut save, mut cancel) = (false, false, false);
+        let (mut start_file, mut save_file, mut cancel_file, mut load) = (false, false, false, None);
+        let saved_list = crate::saved::list();
         let renaming = &mut self.renaming;
+        let saving = &mut self.saving;
         card(ui, "Profile", |ui| {
             ui.add_enabled_ui(!dirty, |ui| ui.horizontal(|ui| segmented(ui, &mut chosen, &labels)))
                 .response
@@ -261,7 +267,63 @@ impl App {
                     });
                 }
             });
+            ui.separator();
+            ui.horizontal(|ui| match saving {
+                Some(name) => {
+                    let field = ui.add(egui::TextEdit::singleline(name).hint_text("File name").desired_width(ui.available_width() - 150.0));
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    save_file = ui.button("Save").clicked() || enter;
+                    cancel_file = ui.button("Cancel").clicked();
+                }
+                None => {
+                    start_file = ui.button("Save to file").on_hover_text("Saves the settings shown below").clicked();
+                    egui::ComboBox::from_id_salt("load_saved")
+                        .selected_text("Load from file")
+                        .width(150.0)
+                        .show_ui(ui, |ui| {
+                            if saved_list.is_empty() {
+                                ui.label(RichText::new("Nothing saved yet").color(WEAK));
+                            }
+                            for s in &saved_list {
+                                if ui.selectable_label(false, &s.name).clicked() {
+                                    load = Some((s.name.clone(), s.path.clone()));
+                                }
+                            }
+                        });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Open folder").clicked() {
+                            let _ = std::fs::create_dir_all(crate::saved::dir());
+                            let _ = std::process::Command::new("xdg-open").arg(crate::saved::dir()).spawn().map(|mut c| {
+                                std::thread::spawn(move || c.wait());
+                            });
+                        }
+                    });
+                }
+            });
         });
+        if start_file {
+            self.saving = Some(labels[active as usize].1.clone());
+        }
+        if cancel_file {
+            self.saving = None;
+        }
+        if save_file {
+            let name = self.saving.take().unwrap_or_default();
+            match self.edit.as_ref().map(|c| crate::saved::save(&name, c)) {
+                Some(Ok(_)) => {
+                    self.message = format!("Saved \"{}\"", name.trim());
+                    self.error = false;
+                }
+                Some(Err(e)) => {
+                    self.saving = Some(name);
+                    self.fail(&format!("Save failed: {e}"));
+                }
+                None => {}
+            }
+        }
+        if let Some((name, path)) = load {
+            self.load_saved(&name, &path);
+        }
         if start {
             self.renaming = Some(labels[active as usize].1.clone());
         }
@@ -291,6 +353,24 @@ impl App {
                 }
                 Err(e) => self.fail(&format!("Switch failed: {e}")),
             }
+        }
+    }
+
+    /// Puts a saved profile's settings into the editor; Apply writes them to the
+    /// active profile like any other edit.
+    fn load_saved(&mut self, name: &str, path: &std::path::Path) {
+        let Some(orig) = &self.orig else { return };
+        match crate::saved::load(path) {
+            Ok(mut cfg) => {
+                cfg.0[0] = orig.0[0]; // stays on the active profile
+                if !cfg.left_button_default() {
+                    return self.fail("That file has the left button remapped; refusing to load it");
+                }
+                self.edit = Some(cfg);
+                self.message = format!("Loaded \"{name}\". Press Apply to write it to the mouse");
+                self.error = false;
+            }
+            Err(e) => self.fail(&format!("Load failed: {e}")),
         }
     }
 

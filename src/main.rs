@@ -10,6 +10,7 @@ mod gui;
 mod hid;
 mod icon;
 mod prefs;
+mod saved;
 mod settings;
 
 use std::io::ErrorKind;

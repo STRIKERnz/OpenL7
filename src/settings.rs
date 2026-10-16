@@ -349,7 +349,7 @@ impl Config {
         if on { self.0[17] |= bit } else { self.0[17] &= !bit }
     }
 
-    fn left_button_default(&self) -> bool {
+    pub fn left_button_default(&self) -> bool {
         self.0[20] & 0x0f == 0 && self.0[21..24] == [0, 0, 0]
     }
 
