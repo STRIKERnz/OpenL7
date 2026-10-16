@@ -87,12 +87,57 @@ struct App {
     edit: Option<Config>,
     message: String,
     error: bool,
+    buttons: ButtonEditor,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tab {
+    System,
+    Keyboard,
+    Hotkey,
+}
+
+/// State of the inline button editor (one button open at a time).
+struct ButtonEditor {
+    open: Option<usize>,
+    tab: Tab,
+    /// The hotkey being built on the Hotkey tab.
+    mods: u8,
+    key: u8,
+    recording: bool,
+}
+
+impl ButtonEditor {
+    fn new() -> Self {
+        Self { open: None, tab: Tab::System, mods: buttons::CTRL, key: 0x04, recording: false }
+    }
+
+    /// Open (or close) button `i`, starting on the tab its action belongs to.
+    fn toggle(&mut self, i: usize, action: Action) {
+        self.recording = false;
+        if self.open == Some(i) {
+            self.open = None;
+            return;
+        }
+        self.open = Some(i);
+        self.tab = match action {
+            Action::Key(k) => {
+                self.key = k;
+                Tab::Keyboard
+            }
+            Action::Hotkey { mods, key } => {
+                (self.mods, self.key) = (mods, key);
+                Tab::Hotkey
+            }
+            _ => Tab::System,
+        };
+    }
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext) -> Self {
         setup_style(&cc.egui_ctx);
-        let mut app = Self { info: None, orig: None, edit: None, message: String::new(), error: false };
+        let mut app = Self { info: None, orig: None, edit: None, message: String::new(), error: false, buttons: ButtonEditor::new() };
         app.reload();
         app
     }
@@ -243,36 +288,175 @@ fn battery_icon(ui: &mut egui::Ui, level: u8, charging: bool) {
     p.rect_filled(fill, 1.5, color);
 }
 
-fn button_picker(ui: &mut egui::Ui, id: usize, action: &mut Action) {
-    let mut choices = Action::choices();
-    if matches!(action, Action::Other(..)) {
-        choices.insert(0, *action);
-    }
-    let is_key = matches!(action, Action::Key(_));
-    let full = ui.available_width();
-    let main_w = if is_key { full * 0.5 - 4.0 } else { full };
-    egui::ComboBox::from_id_salt(("button", id))
-        .width(main_w)
-        .selected_text(if is_key { "Keyboard key".into() } else { action.label() })
-        .show_ui(ui, |ui| {
-            for c in choices {
-                ui.selectable_value(action, c, c.label());
-            }
-            ui.separator();
-            if ui.selectable_label(is_key, "Keyboard key…").clicked() && !is_key {
-                *action = Action::Key(0x04);
-            }
-        });
-    if let Action::Key(code) = action {
-        egui::ComboBox::from_id_salt(("key", id))
-            .width(ui.available_width())
-            .selected_text(buttons::key_name(*code))
-            .show_ui(ui, |ui| {
-                for k in buttons::key_codes() {
-                    ui.selectable_value(code, k, buttons::key_name(k));
+fn chip(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+    let label = RichText::new(text).color(if selected { Color32::WHITE } else { TEXT });
+    ui.add(egui::Button::new(label).fill(if selected { ACCENT } else { WIDGET }).min_size(Vec2::new(0.0, 26.0)))
+}
+
+fn chip_group(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
+    ui.label(RichText::new(title).small().color(WEAK));
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+        body(ui);
+    });
+    ui.add_space(4.0);
+}
+
+/// The row header: the button's current action, clickable to open its editor.
+fn action_header(ui: &mut egui::Ui, action: Action, open: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 30.0), Sense::click());
+    let fill = if resp.hovered() { WIDGET_HOVER } else { WIDGET };
+    let border = if open { stroke(1.5, ACCENT) } else { Stroke::NONE };
+    let p = ui.painter();
+    p.rect(rect, 6.0, fill, border, StrokeKind::Inside);
+    p.text(rect.left_center() + Vec2::new(10.0, 0.0), egui::Align2::LEFT_CENTER, action.label(), egui::FontId::proportional(14.0), TEXT);
+    // the default font has no ▾, so draw the chevron
+    let c = rect.right_center() - Vec2::new(16.0, 0.0);
+    let (tip, base) = if open { (-3.0, 3.0) } else { (3.0, -3.0) };
+    let chevron = vec![c + Vec2::new(-5.0, base), c + Vec2::new(5.0, base), c + Vec2::new(0.0, tip)];
+    p.add(egui::Shape::convex_polygon(chevron, WEAK, Stroke::NONE));
+    p.text(rect.right_center() - Vec2::new(30.0, 0.0), egui::Align2::RIGHT_CENTER, action.category(), egui::FontId::proportional(12.0), WEAK);
+    resp
+}
+
+/// The editor under an open button: System / Keyboard / Hotkey tabs, like M HUB.
+fn action_editor(ui: &mut egui::Ui, ed: &mut ButtonEditor, action: &mut Action) {
+    egui::Frame::new()
+        .fill(BG)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let tabs = [(Tab::System, "System".into()), (Tab::Keyboard, "Keyboard".into()), (Tab::Hotkey, "Hotkey".into())];
+                if segmented(ui, &mut ed.tab, &tabs) {
+                    ed.recording = false;
                 }
             });
+            ui.add_space(6.0);
+            match ed.tab {
+                Tab::System => system_tab(ui, action),
+                Tab::Keyboard => keyboard_tab(ui, action),
+                Tab::Hotkey => hotkey_tab(ui, ed, action),
+            }
+        });
+}
+
+fn system_tab(ui: &mut egui::Ui, action: &mut Action) {
+    if let Action::Other(..) = action {
+        ui.label(RichText::new(format!("Currently: {} (set in M HUB; kept unless you pick something else)", action.label())).small().color(WARN));
     }
+    let mut pick = |ui: &mut egui::Ui, a: Action, text: &str| {
+        if chip(ui, *action == a, text).clicked() {
+            *action = a;
+        }
+    };
+    chip_group(ui, "General", |ui| {
+        pick(ui, Action::Default, "Default");
+        pick(ui, Action::Disabled, "Disabled");
+    });
+    chip_group(ui, "Mouse", |ui| {
+        for (v, n) in buttons::MOUSE {
+            pick(ui, Action::Mouse(v), n);
+        }
+    });
+    chip_group(ui, "Media", |ui| {
+        for (v, n) in buttons::MEDIA {
+            pick(ui, Action::Media(v), n);
+        }
+    });
+    chip_group(ui, "DPI", |ui| {
+        for (v, n) in buttons::DPI {
+            pick(ui, Action::Dpi(v), n);
+        }
+    });
+    chip_group(ui, "System", |ui| {
+        for (v, n) in buttons::SYSTEM {
+            pick(ui, Action::System(v), n);
+        }
+        for (mods, key, n) in buttons::HOTKEY_PRESETS {
+            pick(ui, Action::Hotkey { mods, key }, n);
+        }
+    });
+}
+
+fn keyboard_tab(ui: &mut egui::Ui, action: &mut Action) {
+    for (group, keys) in buttons::key_groups() {
+        chip_group(ui, group, |ui| {
+            for k in keys {
+                if chip(ui, *action == Action::Key(k), &buttons::key_name(k)).clicked() {
+                    *action = Action::Key(k);
+                }
+            }
+        });
+    }
+}
+
+fn hotkey_tab(ui: &mut egui::Ui, ed: &mut ButtonEditor, action: &mut Action) {
+    let mut changed = false;
+    if ed.recording {
+        // take the next key press (with whatever modifiers are held) as the hotkey
+        let pressed = ui.ctx().input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => Some((key.name(), *modifiers)),
+                _ => None,
+            })
+        });
+        if let Some((name, m)) = pressed {
+            if name == "Escape" && !m.any() {
+                ed.recording = false;
+            } else if let Some(k) = buttons::hid_from_key_name(name) {
+                ed.key = k;
+                ed.mods = (if m.ctrl { buttons::CTRL } else { 0 })
+                    | (if m.shift { buttons::SHIFT } else { 0 })
+                    | (if m.alt { buttons::ALT } else { 0 });
+                ed.recording = false;
+                changed = true;
+            }
+        }
+        ui.ctx().request_repaint();
+    }
+
+    chip_group(ui, "Modifiers", |ui| {
+        for (bit, name) in [(buttons::CTRL, "Ctrl"), (buttons::SHIFT, "Shift"), (buttons::ALT, "Alt"), (buttons::SUPER, "Super")] {
+            if chip(ui, ed.mods & bit != 0, name).clicked() {
+                ed.mods ^= bit;
+                changed = true;
+            }
+        }
+    });
+    ui.label(RichText::new("Key").small().color(WEAK));
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("hotkey-key")
+            .width(150.0)
+            .height(360.0)
+            .selected_text(buttons::key_name(ed.key))
+            .show_ui(ui, |ui| {
+                for (group, keys) in buttons::key_groups() {
+                    ui.label(RichText::new(group).small().color(WEAK));
+                    for k in keys {
+                        if ui.selectable_label(ed.key == k, buttons::key_name(k)).clicked() {
+                            ed.key = k;
+                            changed = true;
+                        }
+                    }
+                }
+            });
+        let record = if ed.recording { "Press keys… (Esc cancels)" } else { "● Record" };
+        if chip(ui, ed.recording, record).clicked() {
+            ed.recording = !ed.recording;
+        }
+    });
+    ui.add_space(4.0);
+    if changed {
+        // no modifier is just a plain key
+        *action = if ed.mods == 0 { Action::Key(ed.key) } else { Action::Hotkey { mods: ed.mods, key: ed.key } };
+    }
+    let current = match action {
+        Action::Hotkey { mods, key } => buttons::combo_name(*mods, *key),
+        _ => "pick modifiers and a key, or record one".into(),
+    };
+    ui.label(RichText::new(format!("Sends: {current}")).color(if matches!(action, Action::Hotkey { .. }) { TEXT } else { WEAK }));
 }
 
 /// The DPI stages as a grid of tiles: click a tile to make it active, drag or
@@ -408,6 +592,31 @@ impl eframe::App for App {
                     return;
                 };
 
+                let ed = &mut self.buttons;
+                card(ui, "Buttons", |ui| {
+                    row(ui, settings::BUTTONS[0], |ui| {
+                        ui.label(RichText::new("Left click (fixed)").color(WEAK));
+                    });
+                    for i in 1..5 {
+                        let mut action = cfg.button(i);
+                        let open = ed.open == Some(i);
+                        row(ui, settings::BUTTONS[i], |ui| {
+                            if action_header(ui, action, open).clicked() {
+                                ed.toggle(i, action);
+                            }
+                        });
+                        if ed.open == Some(i) {
+                            action_editor(ui, ed, &mut action);
+                            ui.add_space(4.0);
+                        }
+                        if action != cfg.button(i) {
+                            cfg.set_button(i, action);
+                        }
+                    }
+                    row(ui, settings::BUTTONS[5], |ui| {
+                        ui.label(RichText::new("DPI cycle (fixed)").color(WEAK));
+                    });
+                });
                 card_with(
                     ui,
                     "DPI",
@@ -500,23 +709,6 @@ impl eframe::App for App {
                     });
                 });
 
-                card(ui, "Buttons", |ui| {
-                    row(ui, settings::BUTTONS[0], |ui| {
-                        ui.label(RichText::new("Left click (fixed)").color(WEAK));
-                    });
-                    for i in 1..5 {
-                        row(ui, settings::BUTTONS[i], |ui| {
-                            let mut action = cfg.button(i);
-                            button_picker(ui, i, &mut action);
-                            if action != cfg.button(i) {
-                                cfg.set_button(i, action);
-                            }
-                        });
-                    }
-                    row(ui, settings::BUTTONS[5], |ui| {
-                        ui.label(RichText::new("DPI cycle (fixed)").color(WEAK));
-                    });
-                });
                 ui.vertical_centered(|ui| {
                     ui.label(
                         RichText::new("OpenL7 is unofficial and not affiliated with MCHOSE. Use at your own risk.")
