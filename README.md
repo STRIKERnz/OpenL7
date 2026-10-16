@@ -40,6 +40,11 @@ Your user needs read/write access to the mouse's hidraw device, for example with
 ```
 KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="5253", TAG+="uaccess"
 ```
+## Hardware test
+
+`cargo test --release -- --ignored` changes several settings on a connected mouse, then
+restores them and checks every byte.
+
 
 ## Command line
 
@@ -67,11 +72,6 @@ openl7 profile load backup
 ```
 
 `openl7 --help` lists every setting and named button action.
-
-## Hardware test
-
-`cargo test --release -- --ignored` changes several settings on a connected mouse, then
-restores them and checks every byte.
 
 ## Licence
 
