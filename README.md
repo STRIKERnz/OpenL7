@@ -10,6 +10,8 @@ mouse directly over hidraw, with no web driver needed.
 > (see [LICENSE](LICENSE)). If a setting ever ends up wrong, MCHOSE's official M HUB can
 > factory-reset the mouse. Firmware updates are deliberately left to M HUB.
 
+<p align="center"><img src="docs/screenshot.png" alt="OpenL7 settings window" width="420"></p>
+
 - Tray icon showing battery level, with low-battery notifications from 25% down
 - Settings window: DPI stages with indicator colours, polling rate, sensor mode, lift-off,
   ripple / angle snapping / motion sync, sensor angle, debounce, sleep, button remapping
