@@ -1,6 +1,6 @@
 [package]
 name = "openl7"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Linux tray app, settings window and CLI for the MCHOSE L7 Pro mouse"
 license = "MIT"
