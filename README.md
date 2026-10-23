@@ -14,9 +14,12 @@ mouse directly over hidraw, with no web driver needed.
   <img src="docs/screenshot.png" alt="OpenL7 settings window, two columns" width="560">
   <img src="docs/screenshot-narrow.png" alt="OpenL7 in a narrow window with two cards folded" width="300">
   <img src="docs/screenshot-folded.png" alt="OpenL7 with every card folded" width="300">
+  <img src="docs/screenshot-battery.png" alt="OpenL7 battery card graphing the last 7 days" width="300">
 </p>
 
 - Tray icon showing battery level (optionally as a number), with low-battery notifications from 25% down
+- Battery history graph (24 h / 7 / 30 days) with an estimate of the use left, recorded
+  while the tray runs
 - Settings window: DPI stages with indicator colours, polling rate, sensor mode, lift-off,
   ripple / angle snapping / motion sync, sensor angle, debounce, sleep, button remapping,
   onboard profiles (switch, rename, save to and load from files), accent colour
@@ -66,6 +69,7 @@ active profile and are verified like the window's.
 
 ```sh
 openl7 battery                        # battery level
+openl7 history 7d                     # battery graph: 24h, 7d or 30d
 openl7 info                           # everything on the mouse
 openl7 set dpi 3 1600                 # DPI of stage 3
 openl7 set stage 2                    # active DPI stage
