@@ -2,6 +2,7 @@
 //!
 //!   openl7          show a system tray icon (StatusNotifierItem)
 //!   openl7 battery  print the battery level and exit (`--once` still works)
+//!   openl7 history  graph the recorded battery history in the terminal
 //!   openl7 info     print the mouse's onboard settings
 //!   openl7 gui      open the settings window
 
@@ -484,6 +485,26 @@ fn set(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn print_history(span: Option<&str>) -> Result<(), String> {
+    let span = match span.unwrap_or("24h") {
+        "24h" => 24 * 3600,
+        "7d" => 7 * 24 * 3600,
+        "30d" => 30 * 24 * 3600,
+        other => return Err(format!("unknown range {other}, use 24h, 7d or 30d")),
+    };
+    // SAFETY: TIOCGWINSZ only writes the winsize struct
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let width = match unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) } {
+        0 if ws.ws_col > 0 => ws.ws_col as usize,
+        _ => 80,
+    };
+    let samples = history::load();
+    // 6 columns of axis labels on the left
+    print!("{}", history::plot(&samples, span, history::now(), width.saturating_sub(7).clamp(20, 200), 8));
+    println!("{}", history::summary(&samples));
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -496,6 +517,12 @@ fn main() {
                 exit(1);
             }
         },
+        Some("history") => {
+            if let Err(e) = print_history(args.get(1).map(String::as_str)) {
+                eprintln!("L7 Pro: {e}");
+                exit(2);
+            }
+        }
         Some("gui") => {
             ensure_tray();
             if let Err(e) = gui::run() {
@@ -533,7 +560,7 @@ fn main() {
             let name = std::env::args().next().unwrap_or_default();
             let name = Path::new(&name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             eprintln!(
-                "usage: {name} [battery | info | gui | profile ... | set <setting> <value>]\n  (no args)      show a system tray icon\n  battery        print battery and exit\n  gui            open the settings window\n  info           print onboard settings\n\n{PROFILE_HELP}\n\n{}\n\nUnofficial tool, not affiliated with MCHOSE. Use at your own risk.",
+                "usage: {name} [battery | history [24h|7d|30d] | info | gui | profile ... | set <setting> <value>]\n  (no args)      show a system tray icon\n  battery        print battery and exit\n  history        graph battery history (24h, 7d or 30d)\n  gui            open the settings window\n  info           print onboard settings\n\n{PROFILE_HELP}\n\n{}\n\nUnofficial tool, not affiliated with MCHOSE. Use at your own risk.",
                 set_help()
             );
             exit(2);

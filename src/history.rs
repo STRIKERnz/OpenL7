@@ -126,6 +126,93 @@ pub fn hours_left(samples: &[Sample]) -> Option<f64> {
     Some(last.level as f64 * hours / dropped as f64)
 }
 
+/// The line under the graph: charging, or the use left at the recent pace.
+pub fn summary(samples: &[Sample]) -> String {
+    match (samples.last(), hours_left(samples)) {
+        (Some(s), _) if s.charging => "Charging".into(),
+        (_, Some(h)) if h >= 48.0 => format!("About {:.0} days of use left at your recent pace", h / 24.0),
+        (_, Some(h)) => format!("About {h:.0} h of use left at your recent pace"),
+        (Some(_), None) => "Time left shows once the battery has dropped a few percent since the last charge".into(),
+        (None, None) => "History is recorded while the tray icon is running".into(),
+    }
+}
+
+/// "24 h ago", "7 days ago": the left end of a graph spanning `span` seconds.
+pub fn span_label(span: u64) -> String {
+    if span >= 2 * DAY {
+        format!("{} days ago", span / DAY)
+    } else {
+        format!("{} h ago", span / 3600)
+    }
+}
+
+/// The settings window's graph in braille for the terminal: `cols` characters of
+/// plot, `rows` lines tall, joined across time with no samples like the window.
+pub fn plot(samples: &[Sample], span: u64, now: u64, cols: usize, rows: usize) -> String {
+    let (w, h) = (cols * 2, rows * 4);
+    let x_of = |t: u64| ((w - 1) as f64 * (1.0 - now.saturating_sub(t) as f64 / span as f64)).round() as isize;
+    let y_of = |level: f64| (level.min(100.0) / 100.0 * (h - 1) as f64).round() as usize;
+    let mut levels: Vec<Option<f64>> = vec![None; w];
+    for (x, level) in levels.iter_mut().enumerate() {
+        let t = now as f64 - span as f64 * (w - 1 - x) as f64 / (w - 1) as f64;
+        let i = samples.partition_point(|s| (s.t as f64) < t);
+        if i > 0 && i < samples.len() {
+            let (a, b) = (samples[i - 1], samples[i]);
+            let f = (t - a.t as f64) / (b.t - a.t).max(1) as f64;
+            *level = Some(a.level as f64 + f * (b.level as f64 - a.level as f64));
+        }
+    }
+    // samples themselves, so a lone reading still shows
+    for s in samples {
+        if let Ok(x) = usize::try_from(x_of(s.t)) {
+            if x < w {
+                levels[x] = Some(s.level as f64);
+            }
+        }
+    }
+    let mut dots = vec![vec![false; w]; h];
+    let mut prev: Option<usize> = None;
+    for (x, level) in levels.iter().enumerate() {
+        let Some(level) = level else {
+            prev = None;
+            continue;
+        };
+        let y = y_of(*level);
+        // fill the run from the last column so steep changes stay connected
+        let (lo, hi) = prev.map_or((y, y), |p| (p.min(y), p.max(y)));
+        for row in &mut dots[lo..=hi] {
+            row[x] = true;
+        }
+        prev = Some(y);
+    }
+    const BITS: [[u32; 4]; 2] = [[0x01, 0x02, 0x04, 0x40], [0x08, 0x10, 0x20, 0x80]];
+    let mut out = String::new();
+    for r in 0..rows {
+        let label = match r {
+            0 => "100%",
+            _ if r == rows / 2 => " 50%",
+            _ if r == rows - 1 => "  0%",
+            _ => "",
+        };
+        out += &format!("{label:>4} ┤");
+        for c in 0..cols {
+            let mut bits = 0;
+            for (dx, col) in BITS.iter().enumerate() {
+                for (dy, bit) in col.iter().enumerate() {
+                    if dots[h - 1 - (r * 4 + dy)][c * 2 + dx] {
+                        bits |= bit;
+                    }
+                }
+            }
+            out.push(char::from_u32(0x2800 + bits).unwrap_or(' '));
+        }
+        out.push('\n');
+    }
+    let start = span_label(span);
+    out += &format!("      {start}{:>pad$}\n", "now", pad = cols.saturating_sub(start.chars().count()));
+    out
+}
+
 /// "5 min ago", "3 h ago", "2 days ago".
 pub fn ago(secs: u64) -> String {
     match secs {
@@ -170,6 +257,22 @@ mod tests {
         assert_eq!(hours_left(&[s(0, 50, false), s(h, 90, true)]), None, "charging");
         // a jump up without a charging sample still starts a new run
         assert_eq!(hours_left(&[s(0, 20, false), s(h, 10, false), s(2 * h, 95, false)]), None);
+    }
+
+    #[test]
+    fn plot_joins_across_gaps() {
+        let h = 3600;
+        // 100% a day ago, 0% now, with no samples between
+        let text = plot(&[s(0, 100, false), s(24 * h, 0, false)], DAY, 24 * h, 10, 2);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3);
+        // every plot column has a dot, so the line runs the whole width
+        for c in 0..10 {
+            assert!(lines.iter().take(2).any(|l| l.chars().nth(6 + c) != Some('\u{2800}')), "{text}");
+        }
+        assert!(lines[2].ends_with("now"));
+        let empty = plot(&[], DAY, 24 * h, 10, 2);
+        assert!(empty.lines().take(2).all(|l| l.chars().skip(6).all(|c| c == '\u{2800}')));
     }
 
     #[test]

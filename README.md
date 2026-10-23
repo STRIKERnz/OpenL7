@@ -68,6 +68,7 @@ active profile and are verified like the window's.
 
 ```sh
 openl7 battery                        # battery level
+openl7 history 7d                     # battery graph: 24h, 7d or 30d
 openl7 info                           # everything on the mouse
 openl7 set dpi 3 1600                 # DPI of stage 3
 openl7 set stage 2                    # active DPI stage

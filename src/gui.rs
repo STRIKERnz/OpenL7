@@ -891,14 +891,7 @@ fn battery_card(ui: &mut egui::Ui, log: &mut BatteryLog) {
         });
         ui.add_space(6.0);
         battery_graph(ui, &log.samples, log.span, history::now());
-        let text = match (log.samples.last(), history::hours_left(&log.samples)) {
-            (Some(s), _) if s.charging => "Charging".into(),
-            (_, Some(h)) if h >= 48.0 => format!("About {:.0} days of use left at your recent pace", h / 24.0),
-            (_, Some(h)) => format!("About {h:.0} h of use left at your recent pace"),
-            (Some(_), None) => "Time left shows once the battery has dropped a few percent since the last charge".into(),
-            (None, None) => "History is recorded while the tray icon is running".into(),
-        };
-        ui.label(RichText::new(text).small().color(WEAK));
+        ui.label(RichText::new(history::summary(&log.samples)).small().color(WEAK));
         // keep "now" moving and pick up the tray's new samples
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(60));
     });
@@ -916,8 +909,7 @@ fn battery_graph(ui: &mut egui::Ui, samples: &[Sample], span: u64, now: u64) {
         p.hline(plot.x_range(), y, stroke(1.0, CARD_STROKE));
         p.text(egui::pos2(plot.left() - 6.0, y), egui::Align2::RIGHT_CENTER, format!("{pct}%"), small.clone(), WEAK);
     }
-    let start_label = if span >= 2 * DAY { format!("{} days ago", span / DAY) } else { format!("{} h ago", span / 3600) };
-    p.text(plot.left_bottom() + Vec2::new(0.0, 4.0), egui::Align2::LEFT_TOP, start_label, small.clone(), WEAK);
+    p.text(plot.left_bottom() + Vec2::new(0.0, 4.0), egui::Align2::LEFT_TOP, history::span_label(span), small.clone(), WEAK);
     p.text(plot.right_bottom() + Vec2::new(0.0, 4.0), egui::Align2::RIGHT_TOP, "now", small.clone(), WEAK);
 
     let x_of = |t: u64| plot.right() - now.saturating_sub(t) as f32 / span as f32 * plot.width();
