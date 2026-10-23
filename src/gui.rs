@@ -904,8 +904,8 @@ fn battery_card(ui: &mut egui::Ui, log: &mut BatteryLog) {
     });
 }
 
-/// Level over the last `span` seconds, broken where there are no samples and
-/// shaded while charging; hovering shows the nearest reading.
+/// Level over the last `span` seconds, joined straight across time with no
+/// samples and shaded while charging; hovering shows the nearest reading.
 fn battery_graph(ui: &mut egui::Ui, samples: &[Sample], span: u64, now: u64) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 140.0), Sense::hover());
     let plot = egui::Rect::from_min_max(rect.min + Vec2::new(36.0, 8.0), rect.max - Vec2::new(4.0, 18.0));
@@ -932,25 +932,22 @@ fn battery_graph(ui: &mut egui::Ui, samples: &[Sample], span: u64, now: u64) {
     let lines = ui.painter_at(plot.expand(2.0));
     for w in shown.windows(2) {
         let (a, b) = (w[0], w[1]);
-        if b.t.saturating_sub(a.t) > history::GAP {
-            continue;
-        }
         let (pa, pb) = (egui::pos2(x_of(a.t), y_of(a.level)), egui::pos2(x_of(b.t), y_of(b.level)));
-        if a.charging {
+        // don't shade time away as charging just because it started on the charger
+        if a.charging && b.t.saturating_sub(a.t) <= history::GAP {
             let under = vec![pa, pb, egui::pos2(pb.x, plot.bottom()), egui::pos2(pa.x, plot.bottom())];
             lines.add(egui::Shape::convex_polygon(under, accent().gamma_multiply(0.2), Stroke::NONE));
         }
         lines.line_segment([pa, pb], stroke(2.0, battery_color(a.level, a.charging)));
     }
-    // a lone reading (tray just started, or right after a gap) still shows as a dot
+    // a lone reading (tray just started) still shows as a dot
     if let Some(last) = shown.last() {
         lines.circle_filled(egui::pos2(x_of(last.t), y_of(last.level)), 3.0, battery_color(last.level, last.charging));
     }
 
     if let Some(pos) = resp.hover_pos().filter(|p| plot.x_range().contains(p.x)) {
         let t = now.saturating_sub(((plot.right() - pos.x) / plot.width() * span as f32) as u64);
-        let nearest = shown.iter().min_by_key(|s| s.t.abs_diff(t)).filter(|s| s.t.abs_diff(t) <= history::GAP);
-        if let Some(s) = nearest {
+        if let Some(s) = shown.iter().min_by_key(|s| s.t.abs_diff(t)) {
             let x = x_of(s.t);
             lines.vline(x, plot.y_range(), stroke(1.0, WEAK));
             let text = format!("{}%{} · {}", s.level, if s.charging { " charging" } else { "" }, history::ago(now.saturating_sub(s.t)));
