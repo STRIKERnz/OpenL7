@@ -14,6 +14,7 @@ mouse directly over hidraw, with no web driver needed.
   <img src="docs/screenshot.png" alt="OpenL7 settings window, two columns" width="560">
   <img src="docs/screenshot-narrow.png" alt="OpenL7 in a narrow window with two cards folded" width="300">
   <img src="docs/screenshot-folded.png" alt="OpenL7 with every card folded" width="300">
+  <img src="docs/screenshot-battery.png" alt="OpenL7 battery card graphing the last 7 days" width="300">
 </p>
 
 - Tray icon showing battery level (optionally as a number), with low-battery notifications from 25% down
